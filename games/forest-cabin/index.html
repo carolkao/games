@@ -31,14 +31,24 @@ canvas { border-radius:12px; box-shadow:0 6px 32px rgba(0,0,0,0.7),0 0 0 3px rgb
 // ─── CANVAS ───────────────────────────────────
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
-const VW=720, VH=480, HUD_H=72, TOTAL_H=VH+HUD_H;
+let VW=720, VH=480;
+const HUD_H=72;
+let TOTAL_H=VH+HUD_H;
 const WW=1440, WH=1080;
 const isMobile = navigator.maxTouchPoints>0;
 if(isMobile) document.getElementById('hint').style.display='none';
 let S=1;
 function resize(){
-  S=Math.min((window.innerWidth-(isMobile?0:8))/VW,(window.innerHeight-(isMobile?0:28))/TOTAL_H);
-  S=Math.max(0.4,Math.min(S,2.5));
+  if(isMobile){
+    VW=Math.max(320,Math.round(window.innerWidth));
+    TOTAL_H=Math.max(420,Math.round(window.innerHeight));
+    VH=TOTAL_H-HUD_H;
+    S=1;
+  }else{
+    VW=720;VH=480;TOTAL_H=VH+HUD_H;
+    S=Math.min((window.innerWidth-8)/VW,(window.innerHeight-28)/TOTAL_H);
+    S=Math.max(0.4,Math.min(S,2.5));
+  }
   canvas.width=Math.round(VW*S); canvas.height=Math.round(TOTAL_H*S);
 }
 resize(); window.addEventListener('resize',resize);
@@ -551,6 +561,7 @@ window.addEventListener('keydown',e=>{keys[e.key]=true;if(['ArrowUp','ArrowDown'
 window.addEventListener('keyup',e=>{keys[e.key]=false;});
 
 const JOY={active:false,pid:-1,bx:75,by:VH-65,r:50,kr:22,kx:0,ky:0};
+window.addEventListener('resize',()=>{JOY.by=VH-65;});
 let tapTouch=null;
 function ptrPos(e){const r=canvas.getBoundingClientRect();return{lx:(e.clientX-r.left)/S,ly:(e.clientY-r.top)/S};}
 function inJoyZone(lx,ly){return lx<160&&ly>VH-150&&ly<VH;}
