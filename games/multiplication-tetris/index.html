@@ -250,7 +250,7 @@
   .setup-actions { display: flex; gap: 8px; justify-content: center; }
   #settingsBtn { background: #a78bfa; }
   @media (max-width: 700px) {
-    :root { --cell: min(44px, calc((100vw - 56px) / var(--cols)), calc((100svh - 190px) / 10)); }
+    :root { --cell: min(48px, calc((100vw - 48px) / var(--cols)), calc((100svh - 150px) / 10)); }
     body { overflow-x: hidden; overflow-y: auto; }
     .bg-decor { display: none; }
     .game-wrap {
@@ -394,7 +394,7 @@ function updateDifficulty() {
   if (next !== dropInterval) {
     dropInterval = next;
     clearInterval(dropTimer);
-    dropTimer = setInterval(tick, dropInterval);
+    if (!paused && !gameOver) dropTimer = setInterval(tick, dropInterval);
   }
 }
 
@@ -491,7 +491,7 @@ function landingRow(col, fromRow) {
 }
 
 function tick() {
-  if (gameOver || !falling) return;
+  if (gameOver || paused || !falling) return;
   const { row, col } = falling;
   const isBottom = row + 1 >= ROWS || grid[row + 1][col] !== null;
   if (isBottom) {
@@ -518,6 +518,10 @@ function landPiece() {
 
 // Flood-fill connected same-value groups (4-direction), clear, apply gravity, repeat.
 function resolveMatches(done) {
+  if (paused) {
+    setTimeout(() => resolveMatches(done), 100);
+    return;
+  }
   const group = findAnyGroup();
   if (!group) { done(); return; }
 
@@ -528,7 +532,11 @@ function resolveMatches(done) {
   group.forEach(([r, c]) => cellEls[r][c].classList.add("clearing"));
   spawnClearEffects(group, gained, combo);
 
-  setTimeout(() => {
+  const finishClear = () => {
+    if (paused) {
+      setTimeout(finishClear, 100);
+      return;
+    }
     group.forEach(([r, c]) => grid[r][c] = null);
     addScore(gained);
     clearedCount += group.length;
@@ -536,7 +544,8 @@ function resolveMatches(done) {
     collapseGravity();
     render();
     setTimeout(() => resolveMatches(done), 150);
-  }, 260);
+  };
+  setTimeout(finishClear, 260);
 }
 
 function spawnClearEffects(group, gained, combo) {
@@ -691,6 +700,7 @@ function togglePause() {
   if (paused) {
     clearInterval(dropTimer);
   } else {
+    clearInterval(dropTimer);
     dropTimer = setInterval(tick, dropInterval);
   }
 }
@@ -808,6 +818,7 @@ document.getElementById("settingsBtn").onclick = () => {
 setupCloseBtn.onclick = () => {
   setupOverlay.classList.remove("show");
   if (resumeAfterSettings) {
+    clearInterval(dropTimer);
     dropTimer = setInterval(tick, dropInterval);
   }
 };
