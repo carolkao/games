@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>九九乘法消消樂</title>
+<script>
+  if (matchMedia("(max-width: 700px), (pointer: coarse)").matches && !location.search.includes("desktop=1")) {
+    location.replace("mobile.html");
+  }
+</script>
 <style>
   :root {
     --cols: 8;
@@ -244,6 +249,48 @@
   .chip:has(input:checked) { background: #4fc3f7; color: #fff; }
   .setup-actions { display: flex; gap: 8px; justify-content: center; }
   #settingsBtn { background: #a78bfa; }
+  @media (max-width: 700px) {
+    :root { --cell: min(44px, calc((100vw - 56px) / var(--cols))); }
+    body { overflow: hidden; }
+    .bg-decor { display: none; }
+    .game-wrap {
+      gap: 8px;
+      padding: 8px;
+      min-height: 100svh;
+    }
+    h1 { font-size: 1.15rem; margin: 0; }
+    .hud {
+      gap: 10px;
+      padding: 5px 10px;
+      font-size: .92rem;
+    }
+    #board {
+      gap: 3px;
+      padding: 6px;
+      border-width: 3px;
+      border-radius: 12px;
+    }
+    .cell {
+      border-radius: 8px;
+      font-size: .9rem;
+    }
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      width: min(100%, 420px);
+    }
+    button {
+      width: 100%;
+      padding: 10px 6px;
+      font-size: .88rem;
+      border-radius: 12px;
+    }
+    .hint { display: none; }
+    .overlay-card { padding: 20px 16px; border-radius: 14px; }
+    .table-picker { max-width: 280px; gap: 7px; }
+    .chip { width: 38px; height: 38px; }
+  }
 </style>
 </head>
 <body>
