@@ -1,0 +1,2698 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>🌲 森林小屋 🌲</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; touch-action:none; }
+body {
+  background: radial-gradient(ellipse at center, #2d6e28 0%, #1a3f16 100%);
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  min-height:100vh; overflow:hidden; user-select:none;
+}
+canvas { border-radius:12px; box-shadow:0 6px 32px rgba(0,0,0,0.7),0 0 0 3px rgba(255,255,255,0.1); display:block; }
+#hint { color:rgba(255,255,255,0.45); font-size:11px; margin-top:6px; font-family:sans-serif; letter-spacing:0.5px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">WASD/方向鍵 移動 ‧ 靠近資源自動採集 ‧ 走到市集賣出</div>
+<script>
+// ─── CANVAS ───────────────────────────────────
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const VW=720, VH=480, HUD_H=72, TOTAL_H=VH+HUD_H;
+const WW=1440, WH=1080;
+const isMobile = navigator.maxTouchPoints>0;
+if(isMobile) document.getElementById('hint').style.display='none';
+let S=1;
+function resize(){
+  S=Math.min((window.innerWidth-(isMobile?0:8))/VW,(window.innerHeight-(isMobile?0:28))/TOTAL_H);
+  S=Math.max(0.4,Math.min(S,2.5));
+  canvas.width=Math.round(VW*S); canvas.height=Math.round(TOTAL_H*S);
+}
+resize(); window.addEventListener('resize',resize);
+
+// ─── AUDIO ────────────────────────────────────
+let AC;
+function initAudio(){ if(!AC) AC=new(window.AudioContext||window.webkitAudioContext)(); }
+function beep(freq,type,vol,dur){
+  if(!AC)return;
+  const o=AC.createOscillator(),g=AC.createGain();
+  o.connect(g);g.connect(AC.destination);
+  o.type=type;o.frequency.value=freq;
+  g.gain.setValueAtTime(vol,AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,AC.currentTime+dur);
+  o.start();o.stop(AC.currentTime+dur);
+}
+function sfxChop()   { beep(140+Math.random()*40,'sawtooth',0.12,0.07); }
+function sfxMine()   { beep(90+Math.random()*20,'square',0.10,0.09); }
+function sfxSell()   { [523,659,784,1047].forEach((f,i)=>setTimeout(()=>beep(f,'sine',0.18,0.12),i*65)); }
+function sfxBuy()    { [784,988,1175,1568].forEach((f,i)=>setTimeout(()=>beep(f,'triangle',0.18,0.14),i*75)); }
+function sfxFull()   { beep(220,'sine',0.15,0.2); }
+function sfxPlant()  { beep(330,'sine',0.1,0.2); }
+function sfxFlower() { beep(880+Math.random()*100,'sine',0.08,0.12); }
+function sfxKick()   { beep(70,'square',0.22,0.09); setTimeout(()=>beep(300,'triangle',0.16,0.08),30); }
+canvas.addEventListener('pointerdown',initAudio,{once:true});
+document.addEventListener('keydown',initAudio,{once:true});
+
+// ─── HELPERS ──────────────────────────────────
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+function dst(x1,y1,x2,y2){ return Math.hypot(x2-x1,y2-y1); }
+function roundRect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+  ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);
+  ctx.closePath();
+}
+
+// ─── BASE CONSTANTS ───────────────────────────
+const WOOD_PRICE=5, STONE_PRICE=8;
+const HARVEST_TIME=0.6, BUY_TIME=1.5, HARVEST_R=42;
+const MARKET={x:WW-190,y:90,w:90,h:90};
+const SHOPS=[
+  {x:WW-300,y: 90,w:82,h:68,type:'speed',  emoji:'⚡',label:'快腿'},
+  {x:WW-300,y:185,w:82,h:68,type:'bag',    emoji:'🎒',label:'背包'},
+  {x:WW-300,y:280,w:82,h:68,type:'workers',emoji:'👷',label:'工人'},
+];
+const MAX_UPG={speed:3,bag:3,workers:5};
+const UPG_COST={
+  speed:[40,90,180], bag:[30,70,140], workers:[60,100,150,200,260],
+};
+
+// ─── V1-V2 CONSTANTS ──────────────────────────
+const HOUSE_X=380, HOUSE_Y=420;
+const BUILD_COST={wood:15,stone:10};
+const HOUSE2_COST={wood:25,stone:20,gold:50};
+const HOUSE3_COST={wood:40,stone:30,gold:100};   // 中型屋→大宅
+const HOUSE4_COST={wood:60,stone:50,gold:200,flowers:20}; // 大宅→莊園
+const SEED_PRICE=10, SEEDS_PER_BUY=5;
+const FLOWER_SELL=15, FLOWER_GROW=28, PLANT_TIME=1.2;
+// ─ Garden zone ─────────────────────────────────
+// Layout: [🌱 種子店]  [═══ 花圃 4×2 ═══]  [👩‍🌾 工人店]
+// All three horizontally aligned, centered under house with 220px gap
+const GDN={
+  x:HOUSE_X-128, y:HOUSE_Y+220,  // centered below house
+  cols:4, rows:2,
+  cellW:56, cellH:58,
+  pad:16,
+};
+const GDN_W=GDN.pad*2+GDN.cols*GDN.cellW;  // 256
+const GDN_H=GDN.pad*2+GDN.rows*GDN.cellH;  // 148
+const GDN_CAP=GDN.cols*GDN.rows;            // 8
+// Shops flanking the garden, vertically centred
+const SHOP_W=86, SHOP_H=GDN_H, SHOP_GAP=12;
+const SEED_SHOP={
+  x:GDN.x-SHOP_W-SHOP_GAP, y:GDN.y,
+  w:SHOP_W, h:SHOP_H, buyTimer:0,
+};
+const FW_SHOP={
+  x:GDN.x+GDN_W+SHOP_GAP, y:GDN.y,
+  w:SHOP_W, h:SHOP_H, buyTimer:0,
+  MAX:3,
+};
+const FW_COST=80;
+
+// ─── V3 CONSTANTS ─────────────────────────────
+// Row of shops south of garden:  [花攤 w90] [貓 w78] [狗 w78] [兔 w78]
+// Total row width: 90+10+78+10+78+10+78 = 354 → startX = 380-177 = 203
+const V3_ROW_Y  = GDN.y + GDN_H + 65;     // world y of V3 strip
+const V3_ROW_H  = 80;
+const FSTAND_BUILD = {wood:10, stone:5, gold:0};
+const FSTAND_SELL  = 25;  // vs FLOWER_SELL=15 at market
+const FSTAND = {
+  x:203, y:V3_ROW_Y, w:90, h:V3_ROW_H,
+  level:0, building:false, buildTimer:0,
+  woodDep:0, stoneDep:0, goldDep:0, playerNear:false,
+  inventory:0,  // flower stock waiting for customers
+};
+// Stand customers
+const standCustomers=[];
+let customerSpawnTimer=5;
+const CUSTOMER_EMOJIS=['👦','👧','👨','👩','🧑','👴','👵'];
+const PET_W=78, PET_H=V3_ROW_H;
+const PET_GAP=10;
+const PET_START_X = FSTAND.x + FSTAND.w + PET_GAP;  // 303
+const TREAT_PRICE=8, TREAT_HOLD=1.0;  // 🍪 walk up to an owned pet to feed a treat
+const petShops=[
+  {id:'dog',  emoji:'🐕',name:'旺財', cost:60,  desc:'採集範圍+50%',    owned:false, buyTimer:0, x:PET_START_X,              y:V3_ROW_Y, w:PET_W, h:PET_H},
+  {id:'cat',  emoji:'🐱',name:'咪咪', cost:80,  desc:'工人速度+30%',    owned:false, buyTimer:0, x:PET_START_X+(PET_W+PET_GAP),   y:V3_ROW_Y, w:PET_W, h:PET_H},
+  {id:'bird', emoji:'🐦',name:'小鳥', cost:100, desc:'小地圖顯示資源',  owned:false, buyTimer:0, x:PET_START_X+(PET_W+PET_GAP)*2, y:V3_ROW_Y, w:PET_W, h:PET_H},
+];
+// Pet roaming simulation — stays in forest/harvest area, above house
+const PET_PLAY={x1:60,y1:60,x2:1050,y2:360};
+const petBall={x:400,y:200,vx:60,vy:35,active:false,kickCd:0,kickFlash:0,bounce:0};
+const BALL_KICK_SPEED=340, BALL_MOVING_THRESH=18;
+
+// ─── V4 CONSTANTS ─────────────────────────────
+const MFOREST_X=980, MFOREST_Y=660, MFOREST_W=270, MFOREST_H=220;
+const MUSHROOM_GROW=10, MUSH_SELL=25;
+const mushrooms=[];
+let P_mushrooms=0;
+function initMushroomForest(){
+  mushrooms.length=0;
+  const cols=5,rows=3;
+  for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+    const jx=(Math.random()-0.5)*28, jy=(Math.random()-0.5)*22;
+    mushrooms.push({
+      x:MFOREST_X+40+c*((MFOREST_W-80)/4)+jx,
+      y:MFOREST_Y+40+r*((MFOREST_H-80)/2)+jy,
+      ready:true, timer:0, id:r*cols+c
+    });
+  }
+}
+const WAREHOUSE_COST={wood:20, stone:15};
+const WAREHOUSE={x:720, y:820, w:90, h:75, level:0, building:false, buildTimer:0, woodDep:0, stoneDep:0, playerNear:false};
+
+// ─── V5 CONSTANTS ─────────────────────────────
+const TOWNHALL_COST={wood:80, stone:80, gold:500, flowers:20, mushrooms:10};
+const TOWNHALL={x:620, y:450, w:150, h:120, level:0, building:false, buildTimer:0,
+  woodDep:0, stoneDep:0, goldDep:0, flowersDep:0, mushroomDep:0, playerNear:false};
+let winScreen=false, winTimer=0;
+let totalPlayTime=0, totalGoldEarned=0;
+
+// ─── STATE ────────────────────────────────────
+const UPG={speed:0,bag:0,workers:0};
+function maxBag()      { return (10+UPG.bag*5)*(WAREHOUSE.level>0?2:1); }
+function playerSpeed() { return 130+UPG.speed*38; }
+function upgCost(t)    { const c=UPG_COST[t]; return UPG[t]<c.length?c[UPG[t]]:null; }
+function dogOwned()    { return gamePhase>=3&&petShops[0].owned; }  // 旺財: harvest range +50%
+function catOwned()    { return gamePhase>=3&&petShops[1].owned; }  // 咪咪: worker speed +30%
+function birdOwned()   { return gamePhase>=3&&petShops[2].owned; }  // 小鳥: minimap full resources
+function harvestRangeEff(){ return HARVEST_R*(dogOwned()?1.5:1); }
+function flowerGrowEff(){ return FLOWER_GROW; }  // no growth boost pet in V3
+
+const P={
+  x:WW/2,y:WH/2,
+  wood:0,stone:0,flowers:0,gold:0,
+  harvestTarget:null,harvestTimer:0,
+  buyTarget:null,buyTimer:0,
+  frame:0,frameTimer:0,moving:false,alertedFull:false,
+};
+function inventory(){ return P.wood+P.stone+P.flowers+P_mushrooms; }
+
+// V1-V2 state
+let gamePhase=0;
+// 0=basic, 1=v1_unlocked(build site visible), 2=house_lv1(garden open), 3=house_lv2(v2 complete)
+const HSTATE={
+  level:0,
+  building:false,buildTimer:0,
+  woodDep:0,stoneDep:0,playerNear:false,
+  upgrading:false,upgradeTimer:0,
+  woodDep2:0,stoneDep2:0,goldDep2:0,playerNear2:false,
+  woodDep3:0,stoneDep3:0,goldDep3:0,playerNear3:false,upgrading3:false,upgradeTimer3:0,
+  woodDep4:0,stoneDep4:0,goldDep4:0,flowersDep4:0,playerNear4:false,upgrading4:false,upgradeTimer4:0,
+};
+let P_seeds=0;
+
+// ─── ANNOUNCEMENTS ────────────────────────────
+const announceQueue=[];
+let curAnnounce=null;
+function showAnnouncement(emoji,title,subtitle){
+  announceQueue.push({emoji,title,subtitle,timer:8.0,maxTimer:8.0});
+  for(let i=0;i<12;i++)
+    spawnParticle(WW/2+rnd(-200,200),WH/2+rnd(-120,120),['✨','⭐','🌟'][i%3],'#FFD700');
+}
+
+// ── Small pet toast (top-right, short, non-blocking) ──
+let petToast=null;
+function showPetToast(emoji,name,desc){
+  petToast={emoji,name,desc,timer:3.5,maxTimer:3.5};
+}
+function updatePetToast(dt){if(petToast){petToast.timer-=dt;if(petToast.timer<=0)petToast=null;}}
+function drawPetToast(){
+  if(!petToast)return;
+  const t=petToast.timer,max=petToast.maxTimer;
+  const alpha=Math.min(1,t*4,( max-t)*8);
+  const tw=210,th=52,margin=12;
+  const tx=VW-tw-margin, ty=margin;
+  ctx.save();ctx.globalAlpha=alpha;
+  // shadow + panel
+  ctx.fillStyle='rgba(0,0,0,0.22)';roundRect(tx+2,ty+2,tw,th,10);ctx.fill();
+  ctx.fillStyle='rgba(14,10,4,0.92)';roundRect(tx,ty,tw,th,10);ctx.fill();
+  ctx.strokeStyle='rgba(255,200,50,0.70)';ctx.lineWidth=1.2;roundRect(tx,ty,tw,th,10);ctx.stroke();
+  // emoji
+  ctx.font='22px serif';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText(petToast.emoji,tx+22,ty+th/2);
+  // name
+  ctx.font='bold 12px sans-serif';ctx.fillStyle='#FFD700';ctx.textAlign='left';ctx.textBaseline='top';
+  ctx.fillText(petToast.name+' 加入了！',tx+40,ty+9);
+  // desc
+  ctx.font='10px sans-serif';ctx.fillStyle='#bbb';
+  ctx.fillText(petToast.desc,tx+40,ty+27);
+  ctx.restore();
+}
+function updateAnnouncements(dt){
+  if(!curAnnounce&&announceQueue.length>0)curAnnounce=announceQueue.shift();
+  if(curAnnounce){curAnnounce.timer-=dt;if(curAnnounce.timer<=0)curAnnounce=null;}
+}
+function drawAnnouncement(){
+  if(!curAnnounce)return;
+  const t=curAnnounce.timer,max=curAnnounce.maxTimer;
+  const progress=(max-t)/max;
+  const fadeIn=Math.min(1,(max-t)*3);
+  const fadeOut=Math.min(1,t*3);
+  const alpha=Math.min(fadeIn,fadeOut);
+  const scl=0.55+0.45*Math.min(1,(max-t)*5);
+  ctx.save();
+  ctx.globalAlpha=alpha;
+  ctx.translate(VW/2,VH/2-30);
+  ctx.scale(scl,scl);
+  // Panel
+  const pw=360,ph=106;
+  ctx.fillStyle='rgba(10,8,3,0.93)';roundRect(-pw/2,-ph/2,pw,ph,18);ctx.fill();
+  // Pulsing gold border
+  const glow=0.7+Math.sin(Date.now()/200)*0.3;
+  ctx.shadowColor='#FFD700';ctx.shadowBlur=20*glow;
+  ctx.strokeStyle=`rgba(255,215,0,${0.8+glow*0.2})`;ctx.lineWidth=3;
+  roundRect(-pw/2,-ph/2,pw,ph,18);ctx.stroke();
+  ctx.shadowBlur=0;
+  // Emoji
+  ctx.font='46px serif';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText(curAnnounce.emoji,-pw/2+46,2);
+  // Title
+  ctx.font='bold 20px sans-serif';ctx.fillStyle='#FFD700';ctx.textAlign='left';
+  ctx.shadowColor='#000';ctx.shadowBlur=4;
+  ctx.fillText(curAnnounce.title,-pw/2+90,-16);
+  // Subtitle
+  ctx.font='13px sans-serif';ctx.fillStyle='#ccc';
+  ctx.fillText(curAnnounce.subtitle,-pw/2+90,10);
+  ctx.shadowBlur=0;
+  // Progress bar
+  ctx.fillStyle='rgba(255,255,255,0.1)';roundRect(-pw/2+14,ph/2-18,pw-28,8,4);ctx.fill();
+  ctx.fillStyle='#FFD700';roundRect(-pw/2+14,ph/2-18,(pw-28)*(1-progress),8,4);ctx.fill();
+  ctx.restore();
+}
+const flowerPatches=[];
+function initFlowerPatches(){
+  flowerPatches.length=0;
+  for(let row=0;row<GDN.rows;row++)
+    for(let col=0;col<GDN.cols;col++)
+      flowerPatches.push({
+        x: GDN.x+GDN.pad+col*GDN.cellW+GDN.cellW/2,
+        y: GDN.y+GDN.pad+row*GDN.cellH+GDN.cellH/2,
+        state:'empty', growTimer:0, plantTimer:0,
+      });
+}
+
+// ─── WORLD OBJECTS ────────────────────────────
+function inGardenZone(x,y){
+  // V1-V2 strip: seed shop + garden + FW shop (with padding)
+  if(x > GDN.x-SHOP_W-SHOP_GAP-50 && x < GDN.x+GDN_W+SHOP_GAP+SHOP_W+50 &&
+     y > GDN.y-50                  && y < GDN.y+GDN_H+50) return true;
+  // V3 row: flower stand + pet shops (with padding)
+  if(x > FSTAND.x-50 && x < PET_START_X+(PET_W+PET_GAP)*3+50 &&
+     y > V3_ROW_Y-50  && y < V3_ROW_Y+V3_ROW_H+50) return true;
+  // Cobblestone path from house down through garden to V3 row
+  const pathCX = GDN.x + GDN_W/2;
+  if(x > pathCX-50 && x < pathCX+50 &&
+     y > HOUSE_Y-20  && y < V3_ROW_Y+V3_ROW_H+30) return true;
+  // V4: Magic forest zone
+  if(x>MFOREST_X-40&&x<MFOREST_X+MFOREST_W+40&&y>MFOREST_Y-40&&y<MFOREST_Y+MFOREST_H+40)return true;
+  // V4: Warehouse
+  if(x>WAREHOUSE.x-50&&x<WAREHOUSE.x+WAREHOUSE.w+50&&y>WAREHOUSE.y-50&&y<WAREHOUSE.y+WAREHOUSE.h+50)return true;
+  // V5: Town Hall
+  if(x>TOWNHALL.x-60&&x<TOWNHALL.x+TOWNHALL.w+60&&y>TOWNHALL.y-60&&y<TOWNHALL.y+TOWNHALL.h+60)return true;
+  // House area exclusion (expanded)
+  if(dst(x,y,HOUSE_X,HOUSE_Y)<140)return true;
+  return false;
+}
+function spawnTrees(){
+  const ts=[];
+  for(let i=0;ts.length<30&&i<800;i++){
+    const x=rnd(80,WW-80),y=rnd(80,WH-80);
+    if(dst(x,y,WW/2,WH/2)<130)continue;
+    if(dst(x,y,MARKET.x+45,MARKET.y+45)<140)continue;
+    if(SHOPS.some(s=>dst(x,y,s.x+41,s.y+34)<100))continue;
+    if(dst(x,y,HOUSE_X,HOUSE_Y)<160)continue;
+    if(inGardenZone(x,y))continue;
+    if(ts.some(t=>dst(x,y,t.x,t.y)<72))continue;
+    ts.push({x,y,hp:3,maxHp:3,dead:false,regrow:0,shake:0,sc:1,falling:false,fallAngle:0,fallDir:1});
+  }
+  return ts;
+}
+function spawnRocks(){
+  const rs=[];
+  for(let i=0;rs.length<20&&i<800;i++){
+    const x=rnd(80,WW-80),y=rnd(80,WH-80);
+    if(dst(x,y,WW/2,WH/2)<130)continue;
+    if(dst(x,y,MARKET.x+45,MARKET.y+45)<140)continue;
+    if(SHOPS.some(s=>dst(x,y,s.x+41,s.y+34)<100))continue;
+    if(dst(x,y,HOUSE_X,HOUSE_Y)<160)continue;
+    if(inGardenZone(x,y))continue;
+    if(rs.some(r=>dst(x,y,r.x,r.y)<62))continue;
+    rs.push({x,y,hp:3,maxHp:3,dead:false,regrow:0,shake:0});
+  }
+  return rs;
+}
+const trees=spawnTrees(), rocks=spawnRocks();
+const flowers_deco=Array.from({length:60},()=>({
+  x:rnd(40,WW-40),y:rnd(40,WH-40),
+  e:['🌸','🌼','🌻','🍀','🌷'][Math.floor(Math.random()*5)],
+}));
+
+// ─── PARTICLES ────────────────────────────────
+const parts=[];
+function spawnParticle(x,y,text,color){
+  parts.push({x,y,text,color:color||'#fff',vy:-58,life:1.6,max:1.6});
+}
+
+// ─── WORKER AI ────────────────────────────────
+const workers=[];
+class WorkerAI{
+  constructor(x,y){
+    this.x=x;this.y=y;this.wood=0;this.stone=0;this.mushroomCount=0;
+    this.state='idle';this.target=null;this.harvestTimer=0;
+    this.speed=95;this.thinkTimer=rnd(0.5,1.5);this.frame=0;this.frameTimer=0;
+  }
+  update(dt){
+    this.frameTimer+=dt;
+    if(this.frameTimer>0.18){this.frame=(this.frame+1)%4;this.frameTimer=0;}
+    this.thinkTimer-=dt;
+    if(this.wood+this.stone>=maxBag()){this.state='move-sell';this.thinkTimer=3;}
+    if(this.state==='idle'&&this.thinkTimer<0){
+      this.thinkTimer=rnd(1.5,3);
+      let best=null,bestD=Infinity;
+      for(const t of trees) if(!t.dead&&!t.falling){const d=dst(this.x,this.y,t.x,t.y);if(d<bestD){bestD=d;best={obj:t,type:'tree'};}}
+      for(const r of rocks) if(!r.dead){const d=dst(this.x,this.y,r.x,r.y);if(d<bestD){bestD=d;best={obj:r,type:'rock'};}}
+      // V4: also harvest mushrooms
+      if(gamePhase>=4) for(const m of mushrooms) if(m.ready){const d=dst(this.x,this.y,m.x,m.y);if(d<bestD){bestD=d;best={obj:m,type:'mush'};}}
+      if(best){this.target=best;this.state='move-harvest';}
+    }
+    if(this.state==='move-harvest'&&this.target){
+      if(this.target.obj.dead){this.target=null;this.state='idle';this.thinkTimer=0;return;}
+      const{x:tx,y:ty}=this.target.obj,d=dst(this.x,this.y,tx,ty);
+      if(d<36)this.state='harvest';
+      else{const spd=this.speed*(catOwned()?1.3:1);this.x+=(tx-this.x)/d*spd*dt;this.y+=(ty-this.y)/d*spd*dt;}
+    }
+    if(this.state==='harvest'&&this.target){
+      if(this.target.obj.dead){this.target=null;this.state='idle';this.thinkTimer=0;return;}
+      this.harvestTimer+=dt;
+      if(this.harvestTimer>=0.9){
+        this.harvestTimer=0;
+        const obj=this.target.obj,type=this.target.type;
+        obj.hp--;obj.shake=0.4;
+        if(type==='tree'){this.wood++;spawnParticle(obj.x,obj.y-32,'🪵','#CD853F');sfxChop();}
+        else{this.stone++;spawnParticle(obj.x,obj.y-32,'🪨','#bbb');sfxMine();}
+        if(obj.hp<=0){
+          if(type==='tree'){obj.falling=true;obj.fallDir=Math.random()>0.5?1:-1;obj.fallAngle=0;}
+          else{obj.dead=true;obj.regrow=24;}
+          this.target=null;this.state='idle';this.thinkTimer=0;
+        }
+      }
+    }
+    if(this.state==='move-harvest'&&this.target&&this.target.type==='mush'){
+      if(this.target.obj.ready===false){this.target=null;this.state='idle';this.thinkTimer=0;return;}
+      const d=dst(this.x,this.y,this.target.obj.x,this.target.obj.y);
+      if(d<36){
+        this.target.obj.ready=false;this.target.obj.timer=0;
+        this.mushroomCount++;spawnParticle(this.target.obj.x,this.target.obj.y-20,'+🍄','#FF8800');sfxFlower();
+        this.target=null;this.state='idle';this.thinkTimer=0;
+      }else{const spd=this.speed*(catOwned()?1.3:1);this.x+=(this.target.obj.x-this.x)/d*spd*dt;this.y+=(this.target.obj.y-this.y)/d*spd*dt;}
+    }
+    if(this.state==='move-sell'){
+      const tx=MARKET.x+MARKET.w/2,ty=MARKET.y+MARKET.h/2,d=dst(this.x,this.y,tx,ty);
+      if(d<58){
+        const earned=this.wood*WOOD_PRICE+this.stone*STONE_PRICE+this.mushroomCount*MUSH_SELL;
+        if(earned>0){P.gold+=earned;totalGoldEarned+=earned;spawnParticle(this.x,this.y-30,`+${earned}🪙`,'#FFD700');sfxSell();}
+        this.wood=0;this.stone=0;this.mushroomCount=0;this.state='idle';this.thinkTimer=rnd(1,2);
+      }else{this.x+=(tx-this.x)/d*this.speed*dt;this.y+=(ty-this.y)/d*this.speed*dt;}
+    }
+  }
+}
+
+// ─── FLOWER WORKER AI ─────────────────────────
+const flowerWorkers=[];
+class FlowerWorkerAI{
+  constructor(x,y){
+    this.x=x;this.y=y;this.flowers=0;
+    this.state='idle';this.target=null;this.harvestTimer=0;
+    this.speed=88;this.thinkTimer=rnd(0.3,1.2);this.frame=0;this.frameTimer=0;
+  }
+  update(dt){
+    this.frameTimer+=dt;
+    if(this.frameTimer>0.18){this.frame=(this.frame+1)%4;this.frameTimer=0;}
+    this.thinkTimer-=dt;
+    const cap=4;
+    if(this.flowers>=cap){this.state='move-sell';}
+    if(this.state==='idle'&&this.thinkTimer<0){
+      this.thinkTimer=rnd(1.2,2.5);
+      if(this.flowers<cap){
+        // 1. harvest ready flowers
+        let best=null,bestD=Infinity;
+        for(const p of flowerPatches)if(p.state==='ready'){const d=dst(this.x,this.y,p.x,p.y);if(d<bestD){bestD=d;best=p;}}
+        if(best){this.target=best;this.state='move-harvest';return;}
+        // 2. plant if there are empty patches and seeds available
+        const emptyP=flowerPatches.filter(p=>p.state==='empty');
+        if(emptyP.length>0){
+          if(P_seeds>0){
+            this.target=emptyP[0];this.state='move-plant';return;
+          } else if(P.gold>=SEED_PRICE*SEEDS_PER_BUY){
+            this.state='move-buy-seeds';return;
+          }
+        }
+      }else this.state='move-sell';
+    }
+    if(this.state==='move-harvest'&&this.target){
+      if(this.target.state!=='ready'){this.target=null;this.state='idle';this.thinkTimer=0;return;}
+      const d=dst(this.x,this.y,this.target.x,this.target.y);
+      if(d<34)this.state='harvest';
+      else{this.x+=(this.target.x-this.x)/d*this.speed*dt;this.y+=(this.target.y-this.y)/d*this.speed*dt;}
+    }
+    if(this.state==='harvest'&&this.target){
+      if(this.target.state!=='ready'){this.target=null;this.state='idle';return;}
+      this.harvestTimer+=dt;
+      if(this.harvestTimer>=0.65){
+        this.harvestTimer=0;
+        this.flowers++;this.target.state='empty';this.target.growTimer=0;
+        spawnParticle(this.target.x,this.target.y-30,'+🌸','#FF69B4');sfxFlower();
+        this.target=null;this.state='idle';this.thinkTimer=0;
+      }
+    }
+    // ── Buy seeds ──
+    if(this.state==='move-buy-seeds'){
+      const tx=SEED_SHOP.x+SEED_SHOP.w/2,ty=SEED_SHOP.y+SEED_SHOP.h/2;
+      const d=dst(this.x,this.y,tx,ty);
+      if(d<55){
+        if(P.gold>=SEED_PRICE*SEEDS_PER_BUY){
+          P.gold-=SEED_PRICE*SEEDS_PER_BUY;P_seeds+=SEEDS_PER_BUY;
+          spawnParticle(tx,ty-25,`🌱×${SEEDS_PER_BUY}`,'#90EE90');sfxBuy();
+        }
+        const emptyP=flowerPatches.filter(p=>p.state==='empty');
+        if(emptyP.length>0&&P_seeds>0){this.target=emptyP[0];this.state='move-plant';}
+        else{this.state='idle';this.thinkTimer=rnd(1,2);}
+      }else{const spd=this.speed*(catOwned()?1.3:1);this.x+=(tx-this.x)/d*spd*dt;this.y+=(ty-this.y)/d*spd*dt;}
+    }
+    // ── Move to empty patch ──
+    if(this.state==='move-plant'&&this.target){
+      if(this.target.state!=='empty'){
+        const emptyP=flowerPatches.filter(p=>p.state==='empty');
+        if(emptyP.length>0&&P_seeds>0){this.target=emptyP[0];}
+        else{this.state='idle';this.thinkTimer=rnd(1,2);return;}
+      }
+      const d=dst(this.x,this.y,this.target.x,this.target.y);
+      if(d<34){this.state='plant';this.plantTimer=0;}
+      else{const spd=this.speed*(catOwned()?1.3:1);this.x+=(this.target.x-this.x)/d*spd*dt;this.y+=(this.target.y-this.y)/d*spd*dt;}
+    }
+    // ── Plant seed ──
+    if(this.state==='plant'&&this.target){
+      if(this.target.state!=='empty'){this.state='idle';this.thinkTimer=0;return;}
+      this.plantTimer=(this.plantTimer||0)+dt;
+      if(this.plantTimer>=1.1){
+        if(P_seeds>0){
+          this.target.state='growing';this.target.growTimer=0;P_seeds--;
+          spawnParticle(this.target.x,this.target.y-20,'🌱','#90EE90');sfxBuy();
+        }
+        const emptyP=flowerPatches.filter(p=>p.state==='empty');
+        if(emptyP.length>0&&P_seeds>0){this.target=emptyP[0];this.state='move-plant';}
+        else if(emptyP.length>0&&P.gold>=SEED_PRICE*SEEDS_PER_BUY){this.state='move-buy-seeds';this.target=null;}
+        else{this.state='idle';this.thinkTimer=rnd(1,2);}
+      }
+    }
+    if(this.state==='move-sell'){
+      const useStand=gamePhase>=3&&FSTAND.level>0;
+      const tx=useStand?FSTAND.x+FSTAND.w/2:MARKET.x+MARKET.w/2;
+      const ty=useStand?FSTAND.y+FSTAND.h/2:MARKET.y+MARKET.h/2;
+      const d=dst(this.x,this.y,tx,ty);
+      if(d<58){
+        if(useStand){
+          if(this.flowers>0){
+            FSTAND.inventory+=this.flowers;
+            spawnParticle(tx,ty-25,`+${this.flowers}🌸`,'#FF69B4');sfxSell();
+            this.flowers=0;
+          }
+        }else{
+          const earned=this.flowers*FLOWER_SELL;
+          if(earned>0){P.gold+=earned;spawnParticle(this.x,this.y-30,`+${earned}🪙`,'#FFD700');sfxSell();}
+          this.flowers=0;
+        }
+        this.state='idle';this.thinkTimer=rnd(1,2);
+      }else{this.x+=(tx-this.x)/d*this.speed*dt;this.y+=(ty-this.y)/d*this.speed*dt;}
+    }
+  }
+}
+
+// ─── INPUT ────────────────────────────────────
+const keys={};
+window.addEventListener('keydown',e=>{keys[e.key]=true;if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key))e.preventDefault();});
+window.addEventListener('keyup',e=>{keys[e.key]=false;});
+
+const JOY={active:false,pid:-1,bx:75,by:VH-65,r:50,kr:22,kx:0,ky:0};
+let tapTouch=null;
+function ptrPos(e){const r=canvas.getBoundingClientRect();return{lx:(e.clientX-r.left)/S,ly:(e.clientY-r.top)/S};}
+function inJoyZone(lx,ly){return lx<160&&ly>VH-150&&ly<VH;}
+canvas.addEventListener('pointerdown',e=>{
+  initAudio();const{lx,ly}=ptrPos(e);
+  if(!JOY.active&&inJoyZone(lx,ly)){JOY.active=true;JOY.pid=e.pointerId;JOY.kx=clamp(lx-JOY.bx,-JOY.r,JOY.r);JOY.ky=clamp(ly-JOY.by,-JOY.r,JOY.r);canvas.setPointerCapture(e.pointerId);}
+  else if(e.pointerId!==JOY.pid){tapTouch={x:lx+cam.x,y:ly+cam.y};}
+});
+canvas.addEventListener('pointermove',e=>{
+  const{lx,ly}=ptrPos(e);
+  if(JOY.active&&e.pointerId===JOY.pid){JOY.kx=clamp(lx-JOY.bx,-JOY.r,JOY.r);JOY.ky=clamp(ly-JOY.by,-JOY.r,JOY.r);}
+  else if(e.buttons&&e.pointerId!==JOY.pid){tapTouch={x:lx+cam.x,y:ly+cam.y};}
+});
+canvas.addEventListener('pointerup',e=>{if(JOY.active&&e.pointerId===JOY.pid){JOY.active=false;JOY.pid=-1;JOY.kx=0;JOY.ky=0;}else tapTouch=null;});
+canvas.addEventListener('pointercancel',e=>{if(JOY.active&&e.pointerId===JOY.pid){JOY.active=false;JOY.pid=-1;JOY.kx=0;JOY.ky=0;}else tapTouch=null;});
+
+// ─── CAMERA ───────────────────────────────────
+const cam={x:WW/2-VW/2,y:WH/2-VH/2};
+function wx(v){return v-cam.x;} function wy(v){return v-cam.y;}
+
+// ─── GAME LOOP ────────────────────────────────
+let lastT=0;
+function loop(ts){
+  requestAnimationFrame(loop);
+  const dt=Math.min((ts-lastT)/1000,0.05);
+  lastT=ts;update(dt);render();
+}
+
+// ─── UPDATE ───────────────────────────────────
+function update(dt){
+  // Movement
+  let dx=0,dy=0;
+  if(keys['ArrowLeft']||keys['a']||keys['A'])dx-=1;
+  if(keys['ArrowRight']||keys['d']||keys['D'])dx+=1;
+  if(keys['ArrowUp']||keys['w']||keys['W'])dy-=1;
+  if(keys['ArrowDown']||keys['s']||keys['S'])dy+=1;
+  if(JOY.active){const jd=Math.hypot(JOY.kx,JOY.ky);if(jd>5){dx=JOY.kx/JOY.r;dy=JOY.ky/JOY.r;}}
+  else if(tapTouch){const tdx=tapTouch.x-P.x,tdy=tapTouch.y-P.y,td=Math.hypot(tdx,tdy);if(td>12){dx=tdx/td;dy=tdy/td;}else tapTouch=null;}
+  const len=Math.hypot(dx,dy);
+  if(len>0){dx/=len;dy/=len;}
+  P.x=clamp(P.x+dx*playerSpeed()*dt,16,WW-16);
+  P.y=clamp(P.y+dy*playerSpeed()*dt,16,WH-16);
+  P.moving=len>0;
+  if(P.moving){P.frameTimer+=dt;if(P.frameTimer>0.13){P.frame=(P.frame+1)%4;P.frameTimer=0;}}
+  cam.x+=(clamp(P.x-VW/2,0,WW-VW)-cam.x)*0.12;
+  cam.y+=(clamp(P.y-VH/2,0,WH-VH)-cam.y)*0.12;
+
+  // Harvest (trees, rocks, ready flowers)
+  const inv=inventory(),maxI=maxBag();
+  if(inv<maxI){
+    let nearest=null,nd=harvestRangeEff();
+    for(const t of trees) if(!t.dead&&!t.falling){const d=dst(P.x,P.y,t.x,t.y);if(d<nd){nd=d;nearest={obj:t,type:'tree'};}}
+    for(const r of rocks) if(!r.dead){const d=dst(P.x,P.y,r.x,r.y);if(d<nd){nd=d;nearest={obj:r,type:'rock'};}}
+    for(const p of flowerPatches) if(p.state==='ready'){const d=dst(P.x,P.y,p.x,p.y);if(d<nd){nd=d;nearest={obj:p,type:'flower'};}}
+    if(nearest){
+      if(P.harvestTarget!==nearest.obj){P.harvestTarget=nearest.obj;P.harvestTimer=0;}
+      P.harvestTimer+=dt;
+      if(P.harvestTimer>=HARVEST_TIME){
+        P.harvestTimer=0;
+        if(nearest.type==='tree'){
+          nearest.obj.hp--;nearest.obj.shake=0.45;
+          P.wood++;spawnParticle(nearest.obj.x,nearest.obj.y-32,'+🪵','#CD853F');sfxChop();
+          if(nearest.obj.hp<=0){nearest.obj.falling=true;nearest.obj.fallDir=Math.random()>0.5?1:-1;nearest.obj.fallAngle=0;P.harvestTarget=null;}
+        } else if(nearest.type==='rock'){
+          nearest.obj.hp--;nearest.obj.shake=0.45;
+          P.stone++;spawnParticle(nearest.obj.x,nearest.obj.y-32,'+🪨','#bbb');sfxMine();
+          if(nearest.obj.hp<=0){nearest.obj.dead=true;nearest.obj.regrow=24;P.harvestTarget=null;}
+        } else if(nearest.type==='flower'){
+          P.flowers++;nearest.obj.state='empty';nearest.obj.growTimer=0;
+          spawnParticle(nearest.obj.x,nearest.obj.y-30,'+🌸','#FF69B4');sfxFlower();
+          P.harvestTarget=null;
+        }
+      }
+    }else{P.harvestTarget=null;P.harvestTimer=0;}
+    P.alertedFull=false;
+  }else{
+    P.harvestTarget=null;P.harvestTimer=0;
+    if(!P.alertedFull){P.alertedFull=true;spawnParticle(P.x,P.y-50,'背包滿了！去賣吧','#F39C12');sfxFull();}
+  }
+
+  // Sell at market
+  if(dst(P.x,P.y,MARKET.x+MARKET.w/2,MARKET.y+MARKET.h/2)<68&&(P.wood>0||P.stone>0||P.flowers>0)){
+    const earned=P.wood*WOOD_PRICE+P.stone*STONE_PRICE+P.flowers*FLOWER_SELL;
+    P.gold+=earned;totalGoldEarned+=earned;
+    spawnParticle(P.x,P.y-46,`+${earned}🪙`,'#FFD700');sfxSell();
+    P.wood=0;P.stone=0;P.flowers=0;
+  }
+
+  // Basic shop upgrades
+  let nearShop=null;
+  for(const s of SHOPS) if(dst(P.x,P.y,s.x+s.w/2,s.y+s.h/2)<62){nearShop=s;break;}
+  if(nearShop){
+    const cost=upgCost(nearShop.type);
+    if(cost!==null&&P.gold>=cost){
+      if(P.buyTarget===nearShop)P.buyTimer+=dt;else{P.buyTarget=nearShop;P.buyTimer=0;}
+      if(P.buyTimer>=BUY_TIME){
+        P.gold-=cost;UPG[nearShop.type]++;
+        if(nearShop.type==='workers')workers.push(new WorkerAI(nearShop.x+41,nearShop.y+80));
+        spawnParticle(P.x,P.y-48,`${nearShop.emoji} ${nearShop.label}升級！`,'#00FF88');
+        sfxBuy();P.buyTimer=0;P.buyTarget=null;
+      }
+    }else{P.buyTarget=null;P.buyTimer=0;}
+  }else{P.buyTarget=null;P.buyTimer=0;}
+
+  // ── Phase unlock ──
+  if(gamePhase===0&&UPG.speed>=3&&UPG.bag>=3&&workers.length>=3){
+    gamePhase=1;
+    showAnnouncement('🏗️','建造功能解鎖！','往西北方探索，找到建造地點');
+    sfxBuy();
+  }
+
+  // ── V1: Build site — partial deposit system ──
+  if(gamePhase===1){
+    const bd=dst(P.x,P.y,HOUSE_X,HOUSE_Y);
+    if(bd<65){
+      if(!HSTATE.playerNear){
+        // Just entered range: deposit whatever we can
+        HSTATE.playerNear=true;
+        const needW=BUILD_COST.wood-HSTATE.woodDep, needS=BUILD_COST.stone-HSTATE.stoneDep;
+        const depW=Math.min(P.wood,Math.max(0,needW));
+        const depS=Math.min(P.stone,Math.max(0,needS));
+        if(depW>0){P.wood-=depW;HSTATE.woodDep+=depW;spawnParticle(HOUSE_X,HOUSE_Y-48,`投入 🪵×${depW}`,'#CD853F');}
+        if(depS>0){P.stone-=depS;HSTATE.stoneDep+=depS;spawnParticle(HOUSE_X,HOUSE_Y-64,`投入 🪨×${depS}`,'#bbb');}
+      }
+      // Build timer runs when fully funded
+      const funded=HSTATE.woodDep>=BUILD_COST.wood&&HSTATE.stoneDep>=BUILD_COST.stone;
+      if(funded){
+        HSTATE.building=true;HSTATE.buildTimer+=dt;
+        if(HSTATE.buildTimer>=3.0){
+          HSTATE.level=1;HSTATE.building=false;HSTATE.buildTimer=0;
+          HSTATE.woodDep=0;HSTATE.stoneDep=0;
+          gamePhase=2;initFlowerPatches();
+          showAnnouncement('🏠','小木屋建好了！','花圃開放！去種子攤買種子 🌱');
+          sfxBuy();
+        }
+      }else{HSTATE.building=false;}
+    }else{
+      HSTATE.playerNear=false;
+      if(!HSTATE.building)HSTATE.buildTimer=0;
+    }
+  }
+
+  // ── V2: House upgrade — partial deposit system ──
+  if(gamePhase===2&&HSTATE.level===1){
+    const hd=dst(P.x,P.y,HOUSE_X,HOUSE_Y);
+    if(hd<65){
+      if(!HSTATE.playerNear2){
+        HSTATE.playerNear2=true;
+        const needW=HOUSE2_COST.wood-HSTATE.woodDep2, needS=HOUSE2_COST.stone-HSTATE.stoneDep2;
+        const needG=HOUSE2_COST.gold-HSTATE.goldDep2;
+        const depW=Math.min(P.wood,Math.max(0,needW));
+        const depS=Math.min(P.stone,Math.max(0,needS));
+        const depG=Math.min(P.gold,Math.max(0,needG));
+        if(depW>0){P.wood-=depW;HSTATE.woodDep2+=depW;spawnParticle(HOUSE_X,HOUSE_Y-48,`投入 🪵×${depW}`,'#CD853F');}
+        if(depS>0){P.stone-=depS;HSTATE.stoneDep2+=depS;spawnParticle(HOUSE_X,HOUSE_Y-64,`投入 🪨×${depS}`,'#bbb');}
+        if(depG>0){P.gold-=depG;HSTATE.goldDep2+=depG;spawnParticle(HOUSE_X,HOUSE_Y-80,`投入 🪙×${depG}`,'#FFD700');}
+      }
+      const funded2=HSTATE.woodDep2>=HOUSE2_COST.wood&&HSTATE.stoneDep2>=HOUSE2_COST.stone&&HSTATE.goldDep2>=HOUSE2_COST.gold;
+      if(funded2){
+        HSTATE.upgrading=true;HSTATE.upgradeTimer+=dt;
+        if(HSTATE.upgradeTimer>=3.0){
+          HSTATE.level=2;HSTATE.upgrading=false;HSTATE.upgradeTimer=0;
+          HSTATE.woodDep2=0;HSTATE.stoneDep2=0;HSTATE.goldDep2=0;
+          gamePhase=3;
+          showAnnouncement('🏡','中型屋升級完成！','V3 花攤 & 寵物 即將解鎖！');
+          sfxBuy();
+        }
+      }else{HSTATE.upgrading=false;}
+    }else{
+      HSTATE.playerNear2=false;
+      if(!HSTATE.upgrading)HSTATE.upgradeTimer=0;
+    }
+  }
+
+  // ── V3→V4: 中型屋→大宅 ──
+  if(gamePhase===3&&HSTATE.level===2){
+    const hd=dst(P.x,P.y,HOUSE_X,HOUSE_Y);
+    if(hd<65){
+      if(!HSTATE.playerNear3){
+        HSTATE.playerNear3=true;
+        const dW=Math.min(P.wood, Math.max(0,HOUSE3_COST.wood-HSTATE.woodDep3));
+        const dS=Math.min(P.stone,Math.max(0,HOUSE3_COST.stone-HSTATE.stoneDep3));
+        const dG=Math.min(P.gold, Math.max(0,HOUSE3_COST.gold-HSTATE.goldDep3));
+        if(dW>0){P.wood-=dW;HSTATE.woodDep3+=dW;spawnParticle(HOUSE_X,HOUSE_Y-48,`投入 🪵×${dW}`,'#CD853F');}
+        if(dS>0){P.stone-=dS;HSTATE.stoneDep3+=dS;spawnParticle(HOUSE_X,HOUSE_Y-64,`投入 🪨×${dS}`,'#bbb');}
+        if(dG>0){P.gold-=dG;HSTATE.goldDep3+=dG;spawnParticle(HOUSE_X,HOUSE_Y-80,`投入 🪙×${dG}`,'#FFD700');}
+      }
+      const f3=HSTATE.woodDep3>=HOUSE3_COST.wood&&HSTATE.stoneDep3>=HOUSE3_COST.stone&&HSTATE.goldDep3>=HOUSE3_COST.gold;
+      if(f3){
+        HSTATE.upgrading3=true;HSTATE.upgradeTimer3+=dt;
+        if(HSTATE.upgradeTimer3>=4.0){
+          HSTATE.level=3;HSTATE.upgrading3=false;HSTATE.upgradeTimer3=0;
+          HSTATE.woodDep3=0;HSTATE.stoneDep3=0;HSTATE.goldDep3=0;
+          gamePhase=4;
+          initMushroomForest();
+          showAnnouncement('🏘️','大宅升級完成！','V4 魔法森林解鎖！採集🍄，建造倉庫');
+          sfxBuy();
+        }
+      }else{HSTATE.upgrading3=false;}
+    }else{HSTATE.playerNear3=false;if(!HSTATE.upgrading3)HSTATE.upgradeTimer3=0;}
+  }
+
+  // ── V4→V5: 大宅→莊園 ──
+  if(gamePhase===4&&HSTATE.level===3){
+    const hd=dst(P.x,P.y,HOUSE_X,HOUSE_Y);
+    if(hd<65){
+      if(!HSTATE.playerNear4){
+        HSTATE.playerNear4=true;
+        const dW=Math.min(P.wood,    Math.max(0,HOUSE4_COST.wood-HSTATE.woodDep4));
+        const dS=Math.min(P.stone,   Math.max(0,HOUSE4_COST.stone-HSTATE.stoneDep4));
+        const dG=Math.min(P.gold,    Math.max(0,HOUSE4_COST.gold-HSTATE.goldDep4));
+        const dF=Math.min(P.flowers, Math.max(0,HOUSE4_COST.flowers-HSTATE.flowersDep4));
+        if(dW>0){P.wood-=dW;HSTATE.woodDep4+=dW;spawnParticle(HOUSE_X,HOUSE_Y-48,`投入 🪵×${dW}`,'#CD853F');}
+        if(dS>0){P.stone-=dS;HSTATE.stoneDep4+=dS;spawnParticle(HOUSE_X,HOUSE_Y-64,`投入 🪨×${dS}`,'#bbb');}
+        if(dG>0){P.gold-=dG;HSTATE.goldDep4+=dG;spawnParticle(HOUSE_X,HOUSE_Y-80,`投入 🪙×${dG}`,'#FFD700');}
+        if(dF>0){P.flowers-=dF;HSTATE.flowersDep4+=dF;spawnParticle(HOUSE_X,HOUSE_Y-96,`投入 🌸×${dF}`,'#FF69B4');}
+      }
+      const f4=HSTATE.woodDep4>=HOUSE4_COST.wood&&HSTATE.stoneDep4>=HOUSE4_COST.stone&&HSTATE.goldDep4>=HOUSE4_COST.gold&&HSTATE.flowersDep4>=HOUSE4_COST.flowers;
+      if(f4){
+        HSTATE.upgrading4=true;HSTATE.upgradeTimer4+=dt;
+        if(HSTATE.upgradeTimer4>=5.0){
+          HSTATE.level=4;HSTATE.upgrading4=false;HSTATE.upgradeTimer4=0;
+          HSTATE.woodDep4=0;HSTATE.stoneDep4=0;HSTATE.goldDep4=0;HSTATE.flowersDep4=0;
+          gamePhase=5;
+          showAnnouncement('🏰','莊園升級完成！','V5 市政廳現身！建造它來贏得遊戲');
+          sfxBuy();
+        }
+      }else{HSTATE.upgrading4=false;}
+    }else{HSTATE.playerNear4=false;if(!HSTATE.upgrading4)HSTATE.upgradeTimer4=0;}
+  }
+
+  // ── V1/V2: Seed shop ──
+  if(gamePhase>=2&&!HSTATE.upgrading){
+    const sd=dst(P.x,P.y,SEED_SHOP.x+SEED_SHOP.w/2,SEED_SHOP.y+SEED_SHOP.h/2);
+    if(sd<60&&P.gold>=SEED_PRICE*SEEDS_PER_BUY){
+      SEED_SHOP.buyTimer+=dt;
+      if(SEED_SHOP.buyTimer>=1.5){
+        P.gold-=SEED_PRICE*SEEDS_PER_BUY;P_seeds+=SEEDS_PER_BUY;
+        SEED_SHOP.buyTimer=0;
+        spawnParticle(P.x,P.y-46,`+${SEEDS_PER_BUY} 🌱`,'#90EE90');sfxBuy();
+      }
+    }else SEED_SHOP.buyTimer=0;
+  }
+
+  // ── V2: Plant seeds (nearest empty plot) ──
+  if(gamePhase>=2&&P_seeds>0){
+    let nearestEmpty=null,nearestD=54;
+    for(const patch of flowerPatches)
+      if(patch.state==='empty'){const d=dst(P.x,P.y,patch.x,patch.y);if(d<nearestD){nearestD=d;nearestEmpty=patch;}}
+    for(const patch of flowerPatches)
+      if(patch!==nearestEmpty&&patch.state==='empty')patch.plantTimer=0;
+    if(nearestEmpty){
+      nearestEmpty.plantTimer+=dt;
+      if(nearestEmpty.plantTimer>=PLANT_TIME){
+        nearestEmpty.state='growing';nearestEmpty.growTimer=0;nearestEmpty.plantTimer=0;P_seeds--;
+        spawnParticle(nearestEmpty.x,nearestEmpty.y-30,'🌱 種下了！','#90EE90');sfxPlant();
+      }
+    }
+  }
+
+  // ── V2: Grow flowers ──
+  for(const patch of flowerPatches){
+    if(patch.state==='growing'){patch.growTimer+=dt;if(patch.growTimer>=flowerGrowEff())patch.state='ready';}
+  }
+
+  // ── V2: Flower worker shop ──
+  if(gamePhase>=2&&flowerWorkers.length<FW_SHOP.MAX){
+    const fd=dst(P.x,P.y,FW_SHOP.x+FW_SHOP.w/2,FW_SHOP.y+FW_SHOP.h/2);
+    if(fd<65&&P.gold>=FW_COST){
+      FW_SHOP.buyTimer+=dt;
+      if(FW_SHOP.buyTimer>=BUY_TIME){
+        P.gold-=FW_COST;
+        flowerWorkers.push(new FlowerWorkerAI(FW_SHOP.x+FW_SHOP.w/2,FW_SHOP.y+FW_SHOP.h+20));
+        FW_SHOP.buyTimer=0;
+        spawnParticle(P.x,P.y-48,'👩‍🌾 採花工人來了！','#FF69B4');sfxBuy();
+      }
+    }else FW_SHOP.buyTimer=0;
+  }
+
+  // ── V3: Build flower stand ──
+  if(gamePhase>=3&&FSTAND.level===0){
+    const fd=dst(P.x,P.y,FSTAND.x+FSTAND.w/2,FSTAND.y+FSTAND.h/2);
+    if(fd<65){
+      if(!FSTAND.playerNear){
+        FSTAND.playerNear=true;
+        const dW=Math.min(P.wood, Math.max(0,FSTAND_BUILD.wood-FSTAND.woodDep));
+        const dS=Math.min(P.stone,Math.max(0,FSTAND_BUILD.stone-FSTAND.stoneDep));
+        const dG=Math.min(P.gold, Math.max(0,FSTAND_BUILD.gold-FSTAND.goldDep));
+        if(dW>0){P.wood-=dW;FSTAND.woodDep+=dW;spawnParticle(FSTAND.x+45,FSTAND.y-30,`投入 🪵×${dW}`,'#CD853F');}
+        if(dS>0){P.stone-=dS;FSTAND.stoneDep+=dS;spawnParticle(FSTAND.x+45,FSTAND.y-46,`投入 🪨×${dS}`,'#bbb');}
+        if(dG>0){P.gold-=dG;FSTAND.goldDep+=dG;spawnParticle(FSTAND.x+45,FSTAND.y-62,`投入 🪙×${dG}`,'#FFD700');}
+      }
+      const funded=FSTAND.woodDep>=FSTAND_BUILD.wood&&FSTAND.stoneDep>=FSTAND_BUILD.stone&&FSTAND.goldDep>=FSTAND_BUILD.gold;
+      if(funded){
+        FSTAND.building=true;FSTAND.buildTimer+=dt;
+        if(FSTAND.buildTimer>=2.5){
+          FSTAND.level=1;FSTAND.building=false;FSTAND.buildTimer=0;
+          FSTAND.woodDep=0;FSTAND.stoneDep=0;FSTAND.goldDep=0;
+          showAnnouncement('🌺','花攤開張了！','採花工人將改到花攤賣花 (25🪙/朵)');
+          sfxBuy();
+        }
+      }else FSTAND.building=false;
+    }else{FSTAND.playerNear=false;if(!FSTAND.building)FSTAND.buildTimer=0;}
+  }
+  // Player deposits flowers at stand
+  if(gamePhase>=3&&FSTAND.level>0&&P.flowers>0){
+    const fd2=dst(P.x,P.y,FSTAND.x+FSTAND.w/2,FSTAND.y+FSTAND.h/2);
+    if(fd2<58){
+      FSTAND.inventory+=P.flowers;
+      spawnParticle(FSTAND.x+FSTAND.w/2,FSTAND.y-15,`+${P.flowers}🌸`,'#FF69B4');
+      P.flowers=0;sfxSell();
+    }
+  }
+  updateStandCustomers(dt);
+
+  // ── V3: Buy pets ──
+  if(gamePhase>=3){
+    for(const ps of petShops){
+      if(ps.owned)continue;
+      const pd=dst(P.x,P.y,ps.x+ps.w/2,ps.y+ps.h/2);
+      if(pd<65&&P.gold>=ps.cost){
+        ps.buyTimer+=dt;
+        if(ps.buyTimer>=BUY_TIME){
+          P.gold-=ps.cost;ps.owned=true;ps.buyTimer=0;
+          // Start near player, cuddle first
+          ps.px=P.x+(Math.random()-0.5)*30;
+          ps.py=P.y+(Math.random()-0.5)*30;
+          ps.bobPhase=Math.random()*Math.PI*2;
+          ps.wanderTx=ps.px;ps.wanderTy=ps.py;
+          ps.jumpVel=0;ps.jumpZ=0;
+          ps.state='cuddle';ps.wanderTimer=4+Math.random()*3;
+          showPetToast(ps.emoji,ps.name,ps.desc);
+          sfxBuy();
+        }
+      }else ps.buyTimer=0;
+    }
+  }
+  updatePets(dt);
+
+  // ── V3: Kick the ball — walk into it while moving, pets will give chase ──
+  if(gamePhase>=3&&petShops.some(p=>p.owned)&&petBall.kickCd<=0&&(dx||dy)){
+    if(dst(P.x,P.y,petBall.x,petBall.y)<30){
+      petBall.vx=dx*BALL_KICK_SPEED; petBall.vy=dy*BALL_KICK_SPEED;
+      petBall.kickCd=0.5;
+      petBall.kickFlash=0.25;
+      const kickAng=Math.atan2(dy,dx);
+      spawnParticle(petBall.x,petBall.y-24,'💥','#FFD700');
+      for(let i=0;i<3;i++)spawnParticle(petBall.x-Math.cos(kickAng)*10*i,petBall.y-Math.sin(kickAng)*10*i-6,'💨','#eee');
+      sfxKick();
+    }
+  }
+
+  // ── V3: Feed treats — walk up to an owned pet with enough gold (not while it's chasing the ball) ──
+  if(gamePhase>=3){
+    for(const ps of petShops){
+      if(!ps.owned||ps.px===undefined||ps.state==='chase')continue;
+      const fd=dst(P.x,P.y,ps.px,ps.py);
+      if(fd<40&&P.gold>=TREAT_PRICE){
+        ps.feedTimer=(ps.feedTimer||0)+dt;
+        if(ps.feedTimer>=TREAT_HOLD){
+          P.gold-=TREAT_PRICE;ps.feedTimer=0;
+          spawnParticle(ps.px,ps.py-30,'🍪+💕','#FF69B4');
+          ps.state='cuddle';ps.wanderTimer=3+Math.random()*2;
+          ps.jumpVel=90;
+          sfxBuy();
+        }
+      }else ps.feedTimer=0;
+    }
+  }
+
+  // ── V4: Mushroom forest ──
+  if(gamePhase>=4){
+    for(const m of mushrooms){
+      if(!m.ready){m.timer+=dt;if(m.timer>=MUSHROOM_GROW){m.ready=true;m.timer=0;}}
+    }
+    // Player harvest mushrooms
+    const hR=harvestRangeEff();
+    for(const m of mushrooms){
+      if(m.ready&&dst(P.x,P.y,m.x,m.y)<hR){
+        m.ready=false;m.timer=0;P_mushrooms++;
+        spawnParticle(m.x,m.y-20,'+🍄','#FF8800');sfxFlower();
+      }
+    }
+    // Sell mushrooms at market
+    if(P_mushrooms>0&&dst(P.x,P.y,MARKET.x+MARKET.w/2,MARKET.y+MARKET.h/2)<68){
+      const earned=P_mushrooms*MUSH_SELL;P.gold+=earned;
+      totalGoldEarned+=earned;
+      spawnParticle(MARKET.x+45,MARKET.y-20,`+${earned}🪙`,'#FFD700');sfxSell();P_mushrooms=0;
+    }
+  }
+
+  // ── V4: Warehouse build ──
+  if(gamePhase>=4&&WAREHOUSE.level===0){
+    const wd=dst(P.x,P.y,WAREHOUSE.x+WAREHOUSE.w/2,WAREHOUSE.y+WAREHOUSE.h/2);
+    if(wd<65){
+      if(!WAREHOUSE.playerNear){
+        WAREHOUSE.playerNear=true;
+        const dW=Math.min(P.wood, Math.max(0,WAREHOUSE_COST.wood-WAREHOUSE.woodDep));
+        const dS=Math.min(P.stone,Math.max(0,WAREHOUSE_COST.stone-WAREHOUSE.stoneDep));
+        if(dW>0){P.wood-=dW;WAREHOUSE.woodDep+=dW;spawnParticle(WAREHOUSE.x+45,WAREHOUSE.y-20,`投入 🪵×${dW}`,'#CD853F');}
+        if(dS>0){P.stone-=dS;WAREHOUSE.stoneDep+=dS;spawnParticle(WAREHOUSE.x+45,WAREHOUSE.y-36,`投入 🪨×${dS}`,'#bbb');}
+      }
+      const fw=WAREHOUSE.woodDep>=WAREHOUSE_COST.wood&&WAREHOUSE.stoneDep>=WAREHOUSE_COST.stone;
+      if(fw){WAREHOUSE.building=true;WAREHOUSE.buildTimer+=dt;
+        if(WAREHOUSE.buildTimer>=2.5){
+          WAREHOUSE.level=1;WAREHOUSE.building=false;WAREHOUSE.buildTimer=0;
+          WAREHOUSE.woodDep=0;WAREHOUSE.stoneDep=0;
+          showAnnouncement('🗄️','倉庫蓋好了！','背包容量翻倍！');sfxBuy();
+        }
+      }else WAREHOUSE.building=false;
+    }else{WAREHOUSE.playerNear=false;if(!WAREHOUSE.building)WAREHOUSE.buildTimer=0;}
+  }
+
+  // ── V5: Town Hall build ──
+  if(gamePhase>=5&&TOWNHALL.level===0){
+    const td=dst(P.x,P.y,TOWNHALL.x+TOWNHALL.w/2,TOWNHALL.y+TOWNHALL.h/2);
+    if(td<75){
+      if(!TOWNHALL.playerNear){
+        TOWNHALL.playerNear=true;
+        const dW=Math.min(P.wood,      Math.max(0,TOWNHALL_COST.wood-TOWNHALL.woodDep));
+        const dS=Math.min(P.stone,     Math.max(0,TOWNHALL_COST.stone-TOWNHALL.stoneDep));
+        const dG=Math.min(P.gold,      Math.max(0,TOWNHALL_COST.gold-TOWNHALL.goldDep));
+        const dF=Math.min(P.flowers,   Math.max(0,TOWNHALL_COST.flowers-TOWNHALL.flowersDep));
+        const dM=Math.min(P_mushrooms, Math.max(0,TOWNHALL_COST.mushrooms-TOWNHALL.mushroomDep));
+        if(dW>0){P.wood-=dW;TOWNHALL.woodDep+=dW;spawnParticle(TOWNHALL.x+75,TOWNHALL.y-20,`投入 🪵×${dW}`,'#CD853F');}
+        if(dS>0){P.stone-=dS;TOWNHALL.stoneDep+=dS;spawnParticle(TOWNHALL.x+75,TOWNHALL.y-36,`投入 🪨×${dS}`,'#bbb');}
+        if(dG>0){P.gold-=dG;TOWNHALL.goldDep+=dG;spawnParticle(TOWNHALL.x+75,TOWNHALL.y-52,`投入 🪙×${dG}`,'#FFD700');}
+        if(dF>0){P.flowers-=dF;TOWNHALL.flowersDep+=dF;spawnParticle(TOWNHALL.x+75,TOWNHALL.y-68,`投入 🌸×${dF}`,'#FF69B4');}
+        if(dM>0){P_mushrooms-=dM;TOWNHALL.mushroomDep+=dM;spawnParticle(TOWNHALL.x+75,TOWNHALL.y-84,`投入 🍄×${dM}`,'#FF8800');}
+      }
+      const tf=TOWNHALL.woodDep>=TOWNHALL_COST.wood&&TOWNHALL.stoneDep>=TOWNHALL_COST.stone&&TOWNHALL.goldDep>=TOWNHALL_COST.gold&&TOWNHALL.flowersDep>=TOWNHALL_COST.flowers&&TOWNHALL.mushroomDep>=TOWNHALL_COST.mushrooms;
+      if(tf){TOWNHALL.building=true;TOWNHALL.buildTimer+=dt;
+        if(TOWNHALL.buildTimer>=6.0){
+          TOWNHALL.level=1;TOWNHALL.building=false;
+          gamePhase=6;winScreen=true;winTimer=0;
+          for(let i=0;i<24;i++)spawnParticle(TOWNHALL.x+75+(Math.random()-0.5)*200,TOWNHALL.y+60+(Math.random()-0.5)*150,['🎆','🎇','✨','🎉','⭐'][Math.floor(Math.random()*5)],'#FFD700');
+          showAnnouncement('🎉','你建成了小鎮！','恭喜完成遊戲！感謝遊玩');sfxBuy();
+        }
+      }else TOWNHALL.building=false;
+    }else{TOWNHALL.playerNear=false;if(!TOWNHALL.building)TOWNHALL.buildTimer=0;}
+  }
+
+  if(winScreen){winTimer+=dt;}
+  totalPlayTime+=dt;
+  // gold tracking handled at each sell point
+
+  // Regrow trees/rocks
+  for(const t of trees){
+    if(t.shake>0)t.shake-=dt*3.5;
+    if(t.falling){
+      t.fallAngle+=dt*3.2;
+      if(t.fallAngle>=Math.PI/2){
+        t.fallAngle=Math.PI/2;t.falling=false;t.dead=true;t.regrow=18;
+        for(let i=0;i<5;i++)spawnParticle(t.x+rnd(-30,30),t.y+rnd(-10,20),'🍃','#7ec850');
+      }
+    }else if(t.dead){t.regrow-=dt;if(t.regrow<=0){t.dead=false;t.hp=t.maxHp;t.sc=0.05;}}
+    else if(t.sc<1)t.sc=Math.min(1,t.sc+dt*1.2);
+  }
+  for(const r of rocks){
+    if(r.shake>0)r.shake-=dt*3.5;
+    if(r.dead){r.regrow-=dt;if(r.regrow<=0){r.dead=false;r.hp=r.maxHp;}}
+  }
+
+  for(const w of workers)w.update(dt);
+  for(const fw of flowerWorkers)fw.update(dt);
+  for(let i=parts.length-1;i>=0;i--){
+    const p=parts[i];p.y+=p.vy*dt;p.vy*=0.90;p.life-=dt;if(p.life<=0)parts.splice(i,1);
+  }
+  updateAnnouncements(dt);updatePetToast(dt);
+}
+
+// ─── STAND CUSTOMERS ──────────────────────────
+function updateStandCustomers(dt){
+  if(gamePhase<3||FSTAND.level===0)return;
+  // Spawn
+  customerSpawnTimer-=dt;
+  if(customerSpawnTimer<=0&&standCustomers.length<4){
+    customerSpawnTimer=6+Math.random()*8;
+    const idx=standCustomers.filter(c=>c.state==='waiting').length;
+    const qx=FSTAND.x+FSTAND.w/2+(idx-1)*22;
+    const qy=FSTAND.y+FSTAND.h+30;
+    standCustomers.push({
+      x:FSTAND.x+FSTAND.w+90+Math.random()*60,
+      y:FSTAND.y+FSTAND.h/2+(Math.random()-0.5)*40,
+      tx:qx, ty:qy,
+      state:'approaching',
+      want:1+Math.floor(Math.random()*3),
+      waitTimer:20+Math.random()*10,
+      happyTimer:0,
+      emoji:CUSTOMER_EMOJIS[Math.floor(Math.random()*CUSTOMER_EMOJIS.length)],
+    });
+  }
+  // Recompute queue positions
+  let qi=0;
+  for(const c of standCustomers){if(c.state==='waiting'){c.tx=FSTAND.x+FSTAND.w/2+(qi-1)*24;qi++;}}
+
+  for(let i=standCustomers.length-1;i>=0;i--){
+    const c=standCustomers[i];
+    if(c.state==='approaching'){
+      const d=dst(c.x,c.y,c.tx,c.ty);
+      if(d>8){c.x+=(c.tx-c.x)/d*42*dt;c.y+=(c.ty-c.y)/d*42*dt;}
+      else{c.state='waiting';}
+    } else if(c.state==='waiting'){
+      // Check if inventory can fulfill
+      if(FSTAND.inventory>=c.want){
+        FSTAND.inventory-=c.want;
+        const earned=c.want*FSTAND_SELL;
+        P.gold+=earned;
+        spawnParticle(c.x,c.y-30,`+${earned}🪙`,'#FFD700');
+        spawnParticle(c.x,c.y-15,'😊','#fff');
+        sfxSell();
+        c.state='happy';c.happyTimer=1.8;
+        c.tx=FSTAND.x+FSTAND.w+130;c.ty=FSTAND.y;
+      } else {
+        c.waitTimer-=dt;
+        if(c.waitTimer<=0){
+          c.state='leaving';
+          c.tx=FSTAND.x+FSTAND.w+140;c.ty=FSTAND.y+FSTAND.h/2;
+        }
+      }
+    } else if(c.state==='happy'){
+      c.happyTimer-=dt;
+      c.x+=(c.tx-c.x)*2.5*dt;c.y+=(c.ty-c.y)*2.5*dt;
+      if(c.happyTimer<=0)standCustomers.splice(i,1);
+    } else if(c.state==='leaving'){
+      const d=dst(c.x,c.y,c.tx,c.ty);
+      if(d>10){c.x+=(c.tx-c.x)/d*55*dt;c.y+=(c.ty-c.y)/d*55*dt;}
+      else standCustomers.splice(i,1);
+    }
+  }
+}
+
+// ─── PET SIMULATION ───────────────────────────
+function updatePets(dt){
+  if(gamePhase<3)return;
+  const owned=petShops.filter(p=>p.owned);
+  if(!owned.length)return;
+  const Z=PET_PLAY;
+
+  // Ball physics — always sits in the yard once a pet is owned; player or pet kicks speed it up, friction settles it
+  petBall.active=true;
+  if(petBall.kickCd>0)petBall.kickCd-=dt;
+  if(petBall.kickFlash>0)petBall.kickFlash-=dt;
+  petBall.x+=petBall.vx*dt; petBall.y+=petBall.vy*dt;
+  petBall.bounce+=dt*6;
+  petBall.vx*=0.985; petBall.vy*=0.985;
+  if(petBall.x<Z.x1){petBall.x=Z.x1;petBall.vx=Math.abs(petBall.vx)*0.75;}
+  if(petBall.x>Z.x2){petBall.x=Z.x2;petBall.vx=-Math.abs(petBall.vx)*0.75;}
+  if(petBall.y<Z.y1){petBall.y=Z.y1;petBall.vy=Math.abs(petBall.vy)*0.75;}
+  if(petBall.y>Z.y2){petBall.y=Z.y2;petBall.vy=-Math.abs(petBall.vy)*0.75;}
+  const ballMoving=Math.hypot(petBall.vx,petBall.vy)>BALL_MOVING_THRESH;
+
+  for(const p of owned){
+    if(p.px===undefined){
+      p.px=Z.x1+(Z.x2-Z.x1)*Math.random(); p.py=Z.y1+(Z.y2-Z.y1)*Math.random();
+      p.bobPhase=Math.random()*Math.PI*2;
+      p.wanderTx=p.px; p.wanderTy=p.py; p.wanderTimer=0;
+      p.jumpVel=0; p.jumpZ=0; p.state='wander';
+    }
+    p.bobPhase+=dt*2.5;
+
+    // Ball + cuddle interrupts
+    if(ballMoving&&(p.state==='sleep'||p.state==='rest'||p.state==='cuddle')){
+      p.state='chase'; p.wanderTimer=0;
+    }
+
+    // ── Cuddle: stay near player ──
+    if(p.state==='cuddle'){
+      p.wanderTimer-=dt;
+      if(p.wanderTimer<=0){p.state='wander';p.wanderTimer=0;}
+      const ddx=P.x-p.px, ddy=P.y-p.py, dd=Math.sqrt(ddx*ddx+ddy*ddy);
+      if(dd>28){p.px+=(ddx/dd)*55*dt; p.py+=(ddy/dd)*55*dt;}
+      p.px=clamp(p.px,Z.x1,Z.x2); p.py=clamp(p.py,Z.y1,Z.y2); // stays in the yard even if player wanders off
+      if(Math.random()<dt*0.35&&p.jumpZ===0) p.jumpVel=80+Math.random()*50; // excited hops
+      // Hop physics
+      if(p.jumpZ>0||p.jumpVel!==0){
+        p.jumpVel-=420*dt; p.jumpZ+=p.jumpVel*dt;
+        if(p.jumpZ<=0){p.jumpZ=0;p.jumpVel=0;}
+      }
+      p.bobPhase+=dt*3;
+      continue;
+    }
+
+    if(p.state==='sleep'){
+      p.wanderTimer-=dt;
+      if(p.wanderTimer<=0){p.state='wander';p.wanderTimer=0;}
+      continue; // no movement, no hop
+    }
+    if(p.state==='rest'){
+      p.wanderTimer-=dt;
+      if(p.wanderTimer<=0){p.state='wander';p.wanderTimer=0;}
+      // gentle bob only, no movement
+      continue;
+    }
+
+    // Hop (not during rest/sleep)
+    if(p.jumpZ>0||p.jumpVel!==0){
+      p.jumpVel-=420*dt; p.jumpZ+=p.jumpVel*dt;
+      if(p.jumpZ<=0){p.jumpZ=0;p.jumpVel=0;}
+    } else if(Math.random()<dt*0.12){
+      p.jumpVel=55+Math.random()*65;
+    }
+
+    let tx=p.wanderTx, ty=p.wanderTy, spd=44;
+    if(ballMoving){
+      tx=petBall.x; ty=petBall.y; spd=78; p.state='chase';
+    } else {
+      if(p.state==='chase'){p.state='wander';p.wanderTimer=0;}
+      p.wanderTimer-=dt;
+      if(p.wanderTimer<=0){
+        const roll=Math.random();
+        if(roll<0.12){          // cuddle — wander back to player
+          p.state='cuddle'; p.wanderTimer=3+Math.random()*3;
+        } else if(roll<0.27){  // sleep
+          p.state='sleep'; p.wanderTimer=4+Math.random()*5;
+        } else if(roll<0.45){  // rest/sit
+          p.state='rest'; p.wanderTimer=1.5+Math.random()*2.5;
+        } else {               // new wander target
+          p.wanderTx=Z.x1+(Z.x2-Z.x1)*Math.random();
+          p.wanderTy=Z.y1+(Z.y2-Z.y1)*Math.random();
+          p.wanderTimer=2+Math.random()*4; p.state='wander';
+        }
+      }
+    }
+    const ddx=tx-p.px, ddy=ty-p.py, dd=Math.sqrt(ddx*ddx+ddy*ddy);
+    if(dd>10){p.px+=(ddx/dd)*spd*dt; p.py+=(ddy/dd)*spd*dt;}
+    p.px=clamp(p.px,Z.x1,Z.x2); p.py=clamp(p.py,Z.y1,Z.y2);
+
+    // Kick ball on contact
+    if(ballMoving){
+      const bd=dst(p.px,p.py,petBall.x,petBall.y);
+      if(bd<20){
+        const ang=Math.atan2(petBall.y-p.py,petBall.x-p.px);
+        petBall.vx=Math.cos(ang)*190; petBall.vy=Math.sin(ang)*130;
+        p.jumpVel=115;
+      }
+    }
+  }
+
+  // Play-together sparkle when 2 pets close
+  if(owned.length>=2){
+    for(let i=0;i<owned.length;i++){
+      for(let j=i+1;j<owned.length;j++){
+        if(dst(owned[i].px,owned[i].py,owned[j].px,owned[j].py)<48&&Math.random()<dt*1.5){
+          const mx=(owned[i].px+owned[j].px)/2, my=(owned[i].py+owned[j].py)/2-20;
+          spawnParticle(mx,my,'✨','#FFD700');
+        }
+      }
+    }
+  }
+}
+
+// ─── RENDER ───────────────────────────────────
+function render(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.save();ctx.scale(S,S);
+  drawWorld();drawJoystick();drawHUD();
+  ctx.restore();
+}
+
+function drawWorld(){
+  ctx.fillStyle='#5a9e4a';ctx.fillRect(0,0,VW,VH);
+  const T=80;
+  for(let gx=-(cam.x%T);gx<VW;gx+=T)
+    for(let gy=-(cam.y%T);gy<VH;gy+=T)
+      if((Math.floor((gx+cam.x)/T)+Math.floor((gy+cam.y)/T))%2===0){ctx.fillStyle='#5faa50';ctx.fillRect(gx,gy,T,T);}
+  ctx.strokeStyle='#3a7a2c';ctx.lineWidth=6;ctx.strokeRect(-cam.x+3,-cam.y+3,WW-6,WH-6);
+
+  ctx.save();ctx.beginPath();ctx.rect(0,0,VW,VH);ctx.clip();
+
+  // Deco flowers
+  ctx.font='14px serif';ctx.textAlign='center';ctx.textBaseline='middle';
+  for(const f of flowers_deco){
+    const fx=wx(f.x),fy=wy(f.y);
+    if(fx>-20&&fx<VW+20&&fy>-20&&fy<VH+20)ctx.fillText(f.e,fx,fy);
+  }
+
+  drawMarket();drawShops();
+  drawBuildSite();     // V1
+  drawHouseBuilding(); // V1/V2
+  drawFlowerPatches(); // V2
+  drawSeedShop();      // V2
+  drawFWShop();        // V2 flower worker shop
+  drawFlowerStand();      // V3
+  drawStandCustomers();   // V3
+  drawPetShops();         // V3
+  if(gamePhase>=4){drawMushroomForest();drawWarehouse();}  // V4
+  if(gamePhase>=5){drawTownHall();}                        // V5
+
+  // Depth-sort entities
+  const entities=[
+    ...trees.map(t=>({...t,_t:'tree'})),
+    ...rocks.map(r=>({...r,_t:'rock'})),
+    ...workers.map(w=>({...w,_t:'worker'})),
+    ...flowerWorkers.map(fw=>({...fw,_t:'flowerworker'})),
+    {x:P.x,y:P.y,_t:'player'},
+    ...petShops.filter(p=>p.owned&&p.px!==undefined).map(p=>({...p,_t:'pet'})),
+    ...(petBall.active?[{x:petBall.x,y:petBall.y,_t:'petball'}]:[]),
+  ].sort((a,b)=>a.y-b.y);
+  for(const e of entities){
+    if(e._t==='tree')drawTree(e);
+    else if(e._t==='rock')drawRock(e);
+    else if(e._t==='worker')drawWorkerSprite(e);
+    else if(e._t==='flowerworker')drawFlowerWorkerSprite(e);
+    else if(e._t==='pet')drawPetSprite(e);
+    else if(e._t==='petball')drawPetBall();
+    else drawPlayer();
+  }
+
+  drawParticles();
+  drawHouseUpgradeOverlay(); // drawn after entities so card is never covered by trees
+  drawMinimap();
+  drawAnnouncement();
+  drawPetToast();
+  if(winScreen)drawWinScreen();
+  ctx.restore();
+}
+
+// ── V1: Build site ──
+function drawBuildSite(){
+  if(gamePhase!==1)return;
+  const x=wx(HOUSE_X),y=wy(HOUSE_Y);
+  if(x<-100||x>VW+100||y<-100||y>VH+100)return;
+
+  const pulse=0.7+Math.sin(Date.now()/500)*0.3;
+  ctx.strokeStyle=`rgba(255,220,0,${pulse})`;
+  ctx.lineWidth=3;ctx.setLineDash([7,4]);
+  ctx.beginPath();ctx.arc(x,y,48,0,Math.PI*2);ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.font='46px serif';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText('📐',x,y-4);
+
+  const funded=HSTATE.woodDep>=BUILD_COST.wood&&HSTATE.stoneDep>=BUILD_COST.stone;
+  ctx.font='bold 11px sans-serif';ctx.textAlign='center';
+  ctx.shadowColor='#000';ctx.shadowBlur=4;
+
+  if(!funded){
+    // Show deposit bar for wood
+    const wProg=HSTATE.woodDep/BUILD_COST.wood, sProg=HSTATE.stoneDep/BUILD_COST.stone;
+    ctx.fillStyle='rgba(0,0,0,0.55)';roundRect(x-52,y+34,50,9,4);ctx.fill();
+    ctx.fillStyle='#CD853F';roundRect(x-52,y+34,50*wProg,9,4);ctx.fill();
+    ctx.fillStyle='#bbb';roundRect(x+4,y+34,50,9,4);ctx.fill();
+    ctx.fillStyle='#aaa';roundRect(x+4,y+34,50*sProg,9,4);ctx.fill();
+    ctx.font='9px sans-serif';ctx.fillStyle='#fff';
+    ctx.fillText(`🪵${HSTATE.woodDep}/${BUILD_COST.wood}`,x-27,y+48);
+    ctx.fillText(`🪨${HSTATE.stoneDep}/${BUILD_COST.stone}`,x+29,y+48);
+    ctx.fillStyle='#FFD700';ctx.font='bold 10px sans-serif';
+    ctx.fillText('帶材料靠近即自動投入',x,y+62);
+  } else {
+    ctx.fillStyle='#00FF88';ctx.font='bold 11px sans-serif';
+    ctx.fillText('材料齊全！靠近建造',x,y+40);
+  }
+  ctx.shadowBlur=0;
+
+  if(HSTATE.building){
+    const prog=HSTATE.buildTimer/3.0;
+    ctx.fillStyle='rgba(0,0,0,0.5)';roundRect(x-38,y+66,76,10,5);ctx.fill();
+    ctx.fillStyle='#00FF88';roundRect(x-38,y+66,76*prog,10,5);ctx.fill();
+    ctx.font='9px sans-serif';ctx.fillStyle='#fff';
+    ctx.textAlign='center';ctx.fillText('建造中...',x,y+71);
+  }
+}
+
+// ── House canvas draw helper ──
+function drawHouseCanvas(x,y,lv){
+  // Sizes per level: hw=half-width, hh=half-height, rh=roof-height
+  const sizes=[[0,0,0],[52,50,22],[68,62,28],[88,80,34],[108,98,42]];
+  const [hw,hh,rh]=sizes[lv]||sizes[4];
+  const wallColors=['','#C8A87A','#D0C0A8','#EEE8D8','#F5F0E8'];
+  const roofColors=['','#7A4A28','#9A3018','#2A5A28','#1A3060'];
+  const wc=wallColors[lv], rc=roofColors[lv];
+
+  // Shadow
+  ctx.fillStyle='rgba(0,0,0,0.25)';ctx.beginPath();ctx.ellipse(x,y+hh,hw*0.9,10,0,0,Math.PI*2);ctx.fill();
+
+  // Wall
+  ctx.fillStyle=wc;roundRect(x-hw,y-hh/2,hw*2,hh+4,4);ctx.fill();
+  ctx.strokeStyle='rgba(0,0,0,0.3)';ctx.lineWidth=1.5;roundRect(x-hw,y-hh/2,hw*2,hh+4,4);ctx.stroke();
+
+  // Roof (trapezoid: bottom wider)
+  const rb=hw+12, rt=hw*0.4;
+  ctx.fillStyle=rc;
+  ctx.beginPath();
+  ctx.moveTo(x-rb,y-hh/2);ctx.lineTo(x+rb,y-hh/2);
+  ctx.lineTo(x+rt,y-hh/2-rh);ctx.lineTo(x-rt,y-hh/2-rh);
+  ctx.closePath();ctx.fill();
+  ctx.strokeStyle='rgba(0,0,0,0.3)';ctx.lineWidth=1.5;ctx.stroke();
+
+  // Chimney (lv2+)
+  if(lv>=2){
+    ctx.fillStyle='#8B4A28';ctx.fillRect(x+hw*0.4,y-hh/2-rh-10,14,rh*0.7+10);
+    ctx.strokeStyle='rgba(0,0,0,0.2)';ctx.lineWidth=1;ctx.strokeRect(x+hw*0.4,y-hh/2-rh-10,14,rh*0.7+10);
+    // Smoke puff
+    const st=Date.now()/1200;
+    for(let i=0;i<3;i++){const sp=i/3;const sa=0.18-sp*0.14;
+      ctx.globalAlpha=sa;ctx.fillStyle='#ddd';
+      ctx.beginPath();ctx.arc(x+hw*0.4+7+(Math.sin(st+i)*3),y-hh/2-rh-14-i*8,4+i*2,0,Math.PI*2);ctx.fill();
+    }ctx.globalAlpha=1;
+  }
+
+  // Roof ridge (weathervane lv3+)
+  ctx.fillStyle='rgba(0,0,0,0.25)';ctx.fillRect(x-rt,y-hh/2-rh-1,rt*2,3);
+  if(lv>=3){
+    ctx.font='13px serif';ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText('🐓',x,y-hh/2-rh-9);
+  }
+
+  // Door (centered, bottom of wall)
+  const dw=hw*0.28, dh=hh*0.45;
+  ctx.fillStyle='#4A2808';roundRect(x-dw/2,y+hh/2-dh+4,dw,dh,3);ctx.fill();
+  ctx.strokeStyle='rgba(0,0,0,0.4)';ctx.lineWidth=1;roundRect(x-dw/2,y+hh/2-dh+4,dw,dh,3);ctx.stroke();
+  // Door knob
+  ctx.fillStyle='#FFD700';ctx.beginPath();ctx.arc(x+dw/2-4,y+hh/2-dh/2+4,2,0,Math.PI*2);ctx.fill();
+
+  // Windows (2 for lv1, 4 for lv2+)
+  const ww=hw*0.2, wwh=hh*0.25;
+  const winY=y-hh/2+hh*0.22;
+  const wins=lv===1?[-hw*0.52,hw*0.52]:[-hw*0.68,-hw*0.28,hw*0.28,hw*0.68];
+  ctx.fillStyle='#A8D8F0';ctx.strokeStyle='rgba(0,0,0,0.35)';ctx.lineWidth=1;
+  for(const wx2 of wins){
+    roundRect(x+wx2-ww/2,winY,ww,wwh,2);ctx.fill();ctx.stroke();
+    // Cross pane
+    ctx.strokeStyle='rgba(0,0,0,0.2)';ctx.lineWidth=0.8;ctx.beginPath();
+    ctx.moveTo(x+wx2,winY);ctx.lineTo(x+wx2,winY+wwh);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(x+wx2-ww/2,winY+wwh/2);ctx.lineTo(x+wx2+ww/2,winY+wwh/2);ctx.stroke();
+  }
+
+  // Level sign
+  const names=['','小木屋','中型屋','大宅','莊園'];
+  ctx.font='bold 11px sans-serif';ctx.fillStyle='#FFD700';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.shadowColor='#000';ctx.shadowBlur=4;
+  ctx.fillText(`${names[lv]} Lv${lv}`,x,y+hh/2+16);ctx.shadowBlur=0;
+}
+
+// ── Floating upgrade card above house roof ──
+// bars = [{dot (color string), name, dep, tot, color}]
+function drawHouseUpgradeCard(cx, roofTopY, title, bars, upgrading, upgTimer, upgMax, upgColor){
+  const cardW=190, barH=8, rowH=30; // rowH = label(14) + gap(8) + bar(8)
+  const cardH=28+bars.length*rowH+(upgrading?20:0);
+  const cy=roofTopY-cardH-18;
+  const lx=cx-cardW/2+12, rEdge=cx+cardW/2-12, innerW=rEdge-lx;
+
+  // Drop shadow
+  ctx.fillStyle='rgba(0,0,0,0.30)';roundRect(cx-cardW/2+3,cy+3,cardW,cardH,10);ctx.fill();
+  // Panel
+  ctx.fillStyle='rgba(10,6,2,0.92)';roundRect(cx-cardW/2,cy,cardW,cardH,10);ctx.fill();
+  // Gold border
+  ctx.strokeStyle='rgba(255,210,50,0.80)';ctx.lineWidth=1.5;roundRect(cx-cardW/2,cy,cardW,cardH,10);ctx.stroke();
+  // Arrow pointing down
+  ctx.fillStyle='rgba(10,6,2,0.92)';
+  ctx.beginPath();ctx.moveTo(cx-7,cy+cardH);ctx.lineTo(cx+7,cy+cardH);ctx.lineTo(cx,cy+cardH+11);ctx.closePath();ctx.fill();
+  ctx.strokeStyle='rgba(255,210,50,0.80)';ctx.lineWidth=1.5;ctx.stroke();
+
+  // Title
+  ctx.font='bold 12px sans-serif';ctx.fillStyle='#FFD700';
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.shadowColor='#000';ctx.shadowBlur=2;
+  ctx.fillText(title,cx,cy+15);ctx.shadowBlur=0;
+
+  // Material rows
+  bars.forEach((b,i)=>{
+    const rowTop=cy+28+i*rowH;
+    const labelY=rowTop+7;
+    const barY=rowTop+21;
+    const p=Math.min(1,b.dep/b.tot);
+    const done=b.dep>=b.tot;
+
+    // Colored dot icon
+    ctx.fillStyle=done?'#2ecc71':b.color;
+    ctx.beginPath();ctx.arc(lx+5,labelY,5,0,Math.PI*2);ctx.fill();
+
+    // Name
+    ctx.font='bold 10px sans-serif';ctx.fillStyle=done?'#2ecc71':'#e8e8e8';
+    ctx.textAlign='left';ctx.textBaseline='middle';
+    ctx.fillText(b.name,lx+14,labelY);
+
+    // Count — right-aligned
+    const countStr=`${b.dep}/${b.tot}`;
+    ctx.font='10px sans-serif';ctx.fillStyle=done?'#2ecc71':'#bbb';
+    ctx.textAlign='right';
+    ctx.fillText(countStr+(done?' ✓':''),rEdge,labelY);
+
+    // Bar track
+    ctx.fillStyle='rgba(255,255,255,0.10)';roundRect(lx,barY,innerW,barH,barH/2);ctx.fill();
+    // Bar fill
+    if(p>0){ctx.fillStyle=done?'#2ecc71':b.color;roundRect(lx,barY,innerW*p,barH,barH/2);ctx.fill();}
+  });
+
+  // Upgrade-in-progress bar
+  if(upgrading){
+    const pY=cy+cardH-14;const p=Math.min(1,upgTimer/upgMax);
+    ctx.fillStyle='rgba(255,255,255,0.08)';roundRect(lx,pY,innerW,8,4);ctx.fill();
+    ctx.fillStyle=upgColor;roundRect(lx,pY,innerW*p,8,4);ctx.fill();
+    ctx.font='bold 9px sans-serif';ctx.fillStyle='#fff';
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText('升級中…',cx,pY+4);
+  }
+}
+
+// ── V1-V4: House building (canvas draw only, no card) ──
+function drawHouseBuilding(){
+  if(HSTATE.level===0)return;
+  const x=wx(HOUSE_X),y=wy(HOUSE_Y);
+  if(x<-120||x>VW+120||y<-120||y>VH+120)return;
+  drawHouseCanvas(x,y,HSTATE.level);
+}
+
+// ── Upgrade card overlay — drawn AFTER all world entities ──
+function drawHouseUpgradeOverlay(){
+  if(HSTATE.level===0)return;
+  const x=wx(HOUSE_X),y=wy(HOUSE_Y);
+  if(x<-150||x>VW+150||y<-200||y>VH+200)return;
+  const lv=HSTATE.level;
+  const sizes=[[0,0,0],[52,50,22],[68,62,28],[88,80,34],[108,98,42]];
+  const [,hh,rh]=sizes[lv]||sizes[4];
+  const roofTopY=y-hh/2-rh;
+
+  if(lv===1){
+    if(!(HSTATE.woodDep2>=HOUSE2_COST.wood&&HSTATE.stoneDep2>=HOUSE2_COST.stone&&HSTATE.goldDep2>=HOUSE2_COST.gold)||HSTATE.upgrading){
+      drawHouseUpgradeCard(x,roofTopY,'升級 中型屋 🏡',[
+        {name:'木材', dep:HSTATE.woodDep2, tot:HOUSE2_COST.wood,  color:'#CD853F'},
+        {name:'石材', dep:HSTATE.stoneDep2,tot:HOUSE2_COST.stone, color:'#9090aa'},
+        {name:'金幣', dep:HSTATE.goldDep2, tot:HOUSE2_COST.gold,  color:'#FFD700'},
+      ], HSTATE.upgrading, HSTATE.upgradeTimer, 3.0, '#3498db');
+    }
+  }
+  if(lv===2&&gamePhase===3){
+    if(!(HSTATE.woodDep3>=HOUSE3_COST.wood&&HSTATE.stoneDep3>=HOUSE3_COST.stone&&HSTATE.goldDep3>=HOUSE3_COST.gold)||HSTATE.upgrading3){
+      drawHouseUpgradeCard(x,roofTopY,'升級 大宅 🏘️',[
+        {name:'木材', dep:HSTATE.woodDep3, tot:HOUSE3_COST.wood,  color:'#CD853F'},
+        {name:'石材', dep:HSTATE.stoneDep3,tot:HOUSE3_COST.stone, color:'#9090aa'},
+        {name:'金幣', dep:HSTATE.goldDep3, tot:HOUSE3_COST.gold,  color:'#FFD700'},
+      ], HSTATE.upgrading3, HSTATE.upgradeTimer3, 4.0, '#e67e22');
+    }
+  }
+  if(lv===3&&gamePhase===4){
+    if(!(HSTATE.woodDep4>=HOUSE4_COST.wood&&HSTATE.stoneDep4>=HOUSE4_COST.stone&&HSTATE.goldDep4>=HOUSE4_COST.gold&&HSTATE.flowersDep4>=HOUSE4_COST.flowers)||HSTATE.upgrading4){
+      drawHouseUpgradeCard(x,roofTopY,'升級 莊園 🏰',[
+        {name:'木材', dep:HSTATE.woodDep4,    tot:HOUSE4_COST.wood,    color:'#CD853F'},
+        {name:'石材', dep:HSTATE.stoneDep4,   tot:HOUSE4_COST.stone,   color:'#9090aa'},
+        {name:'金幣', dep:HSTATE.goldDep4,    tot:HOUSE4_COST.gold,    color:'#FFD700'},
+        {name:'花朵', dep:HSTATE.flowersDep4, tot:HOUSE4_COST.flowers, color:'#FF69B4'},
+      ], HSTATE.upgrading4, HSTATE.upgradeTimer4, 5.0, '#9b59b6');
+    }
+  }
+  if(lv===4&&gamePhase===5){
+    ctx.font='bold 10px sans-serif';ctx.fillStyle='rgba(255,220,50,0.95)';
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.shadowColor='#000';ctx.shadowBlur=5;
+    ctx.fillText('🏛️ 前往地圖中央建造市政廳！',x,roofTopY-14);ctx.shadowBlur=0;
+  }
+}
+
+// ── V2: Garden enclosure + plots ──
+function drawFlowerPatches(){
+  if(gamePhase<2)return;
+  const gx=wx(GDN.x),gy=wy(GDN.y);
+  const totalLeft=wx(GDN.x-SHOP_W-SHOP_GAP);
+  const totalRight=wx(GDN.x+GDN_W+SHOP_GAP+SHOP_W);
+  if(totalRight<-80||totalLeft>VW+80||gy>VH+80||gy+GDN_H<-80)return;
+
+  // ── Cobblestone path from house to garden ──
+  const houseScreenX=wx(HOUSE_X), houseScreenY=wy(HOUSE_Y);
+  const pathX=gx+GDN_W/2-18, pathTop=houseScreenY+38, pathBot=gy-5;
+  if(pathBot>pathTop){
+    ctx.fillStyle='rgba(160,130,90,0.35)';
+    roundRect(pathX,pathTop,36,pathBot-pathTop,0);ctx.fill();
+    // pebble dots along path
+    ctx.fillStyle='rgba(140,110,75,0.5)';
+    for(let py=pathTop+10;py<pathBot-10;py+=18){
+      ctx.beginPath();ctx.ellipse(pathX+8,py,5,3,0.3,0,Math.PI*2);ctx.fill();
+      ctx.beginPath();ctx.ellipse(pathX+22,py+8,5,3,-0.2,0,Math.PI*2);ctx.fill();
+    }
+  }
+
+  // ── Unified base panel (shops + garden as one connected strip) ──
+  const panelX=wx(GDN.x-SHOP_W-SHOP_GAP-8);
+  const panelW=SHOP_W+SHOP_GAP+GDN_W+SHOP_GAP+SHOP_W+16;
+  ctx.fillStyle='#3a2510';
+  roundRect(panelX,gy-8,panelW,GDN_H+16,14);ctx.fill();
+  ctx.strokeStyle='#2a1a08';ctx.lineWidth=2;
+  roundRect(panelX,gy-8,panelW,GDN_H+16,14);ctx.stroke();
+
+  // ── Outer fence border (garden only) ──
+  ctx.fillStyle='#4a2e10';
+  roundRect(gx-5,gy-5,GDN_W+10,GDN_H+10,10);ctx.fill();
+  ctx.strokeStyle='#2c1a08';ctx.lineWidth=2;
+  roundRect(gx-5,gy-5,GDN_W+10,GDN_H+10,10);ctx.stroke();
+
+  // ── Inner soil ──
+  ctx.fillStyle='#7a4820';
+  roundRect(gx,gy,GDN_W,GDN_H,8);ctx.fill();
+
+  // ── Fence rails (top & bottom) ──
+  ctx.fillStyle='#8B5E2A';
+  roundRect(gx-5,gy-3,GDN_W+10,7,3);ctx.fill();
+  roundRect(gx-5,gy+GDN_H-4,GDN_W+10,7,3);ctx.fill();
+  // Fence posts (vertical planks)
+  for(let i=0;i<=GDN.cols;i++){
+    const px=gx+GDN.pad+i*GDN.cellW-GDN.cellW/2;
+    if(i===0||i===GDN.cols){
+      ctx.fillStyle='#6b4518';
+      ctx.fillRect(i===0?gx-5:gx+GDN_W-4,gy-10,9,GDN_H+20);
+    }
+  }
+  // Re-draw rails on top of posts
+  ctx.fillStyle='#8B5E2A';
+  roundRect(gx-5,gy-3,GDN_W+10,7,3);ctx.fill();
+  roundRect(gx-5,gy+GDN_H-4,GDN_W+10,7,3);ctx.fill();
+
+  // ── Individual plot beds ──
+  for(let r=0;r<GDN.rows;r++){
+    for(let c=0;c<GDN.cols;c++){
+      const bx=gx+GDN.pad+c*GDN.cellW+3, by=gy+GDN.pad+r*GDN.cellH+3;
+      const bw=GDN.cellW-6, bh=GDN.cellH-6;
+      ctx.fillStyle='#5c3210';roundRect(bx,by,bw,bh,6);ctx.fill();
+      ctx.fillStyle='#6b3d18';roundRect(bx+2,by+2,bw-4,bh-4,4);ctx.fill();
+      // Plot divider lines
+      ctx.strokeStyle='rgba(0,0,0,0.25)';ctx.lineWidth=1;
+      roundRect(bx,by,bw,bh,6);ctx.stroke();
+    }
+  }
+
+  // ── Garden sign above unified strip ──
+  const used=flowerPatches.filter(p=>p.state!=='empty').length;
+  const allReady=flowerPatches.filter(p=>p.state==='ready').length;
+  const stripCx=wx(GDN.x-SHOP_W-SHOP_GAP+SHOP_W+SHOP_GAP+GDN_W/2);
+  ctx.font='bold 12px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillStyle=allReady>0?'#FF69B4':'rgba(255,240,180,0.95)';
+  ctx.shadowColor='#000';ctx.shadowBlur=4;
+  ctx.fillText(`🌷 花圃  ${used}/${GDN_CAP}`,gx+GDN_W/2,gy-22);
+  if(allReady>0){
+    ctx.fillStyle='rgba(255,105,180,0.9)';ctx.font='10px sans-serif';
+    ctx.fillText(`✨ ${allReady} 朵可採！`,gx+GDN_W/2,gy-8);
+  }
+  ctx.shadowBlur=0;
+
+  // ── Plot contents ──
+  for(const patch of flowerPatches){
+    const px=wx(patch.x),py=wy(patch.y);
+    const near=P_seeds>0&&dst(P.x,P.y,patch.x,patch.y)<50;
+
+    if(patch.state==='empty'){
+      // Dark soil dot
+      ctx.fillStyle='rgba(0,0,0,0.2)';
+      ctx.beginPath();ctx.ellipse(px,py+4,14,6,0,0,Math.PI*2);ctx.fill();
+      if(near){
+        const pulse=0.6+Math.sin(Date.now()/350)*0.4;
+        ctx.strokeStyle=`rgba(144,238,144,${pulse})`;ctx.lineWidth=2;ctx.setLineDash([4,3]);
+        roundRect(px-GDN.cellW/2+5,py-GDN.cellH/2+5,GDN.cellW-10,GDN.cellH-10,5);ctx.stroke();
+        ctx.setLineDash([]);
+        if(patch.plantTimer>0){
+          const prog=patch.plantTimer/PLANT_TIME;
+          ctx.fillStyle='rgba(0,0,0,0.55)';roundRect(px-20,py-GDN.cellH/2+9,40,7,3.5);ctx.fill();
+          ctx.fillStyle='#90EE90';roundRect(px-20,py-GDN.cellH/2+9,40*prog,7,3.5);ctx.fill();
+        }else{
+          ctx.font='9px sans-serif';ctx.fillStyle='#90EE90';ctx.textAlign='center';
+          ctx.shadowColor='#000';ctx.shadowBlur=2;ctx.fillText('點此種花',px,py-GDN.cellH/2+13);ctx.shadowBlur=0;
+        }
+      }
+    } else if(patch.state==='growing'){
+      const prog=patch.growTimer/FLOWER_GROW;
+      const sc=0.55+prog*0.45;
+      ctx.save();ctx.translate(px,py+2);ctx.scale(sc,sc);
+      ctx.font='24px serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('🌱',0,0);
+      ctx.restore();
+      // Growth bar at bottom of cell
+      ctx.fillStyle='rgba(0,0,0,0.45)';roundRect(px-18,py+GDN.cellH/2-14,36,6,3);ctx.fill();
+      ctx.fillStyle='#2ecc71';roundRect(px-18,py+GDN.cellH/2-14,36*prog,6,3);ctx.fill();
+    } else if(patch.state==='ready'){
+      const bob=Math.sin(Date.now()/600+patch.x*0.03)*3;
+      ctx.font='28px serif';ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText('🌸',px,py-2+bob);
+      const sparkAlpha=(Math.sin(Date.now()/260+patch.x)+1)/2*0.85;
+      ctx.globalAlpha=sparkAlpha;ctx.font='10px serif';
+      ctx.fillText('✨',px+16,py-16+bob);ctx.globalAlpha=1;
+    }
+  }
+}
+
+// ── V2: Seed shop ──
+function drawSeedShop(){
+  if(gamePhase<2)return;
+  const{x:sx,y:sy,w:sw,h:sh,buyTimer:bt}=SEED_SHOP;
+  const x=wx(sx),y=wy(sy);
+  if(x<-120||x>VW+120||y<-120||y>VH+120)return;
+  const canBuy=P.gold>=SEED_PRICE*SEEDS_PER_BUY;
+  const cy=y+sh/2;
+
+  // Panel — blends with unified base
+  ctx.fillStyle=canBuy?'rgba(20,90,40,0.88)':'rgba(50,35,15,0.88)';
+  roundRect(x,y,sw,sh,10);ctx.fill();
+  ctx.strokeStyle=canBuy?'#2ecc71':'rgba(120,80,40,0.7)';ctx.lineWidth=2;
+  roundRect(x,y,sw,sh,10);ctx.stroke();
+
+  // Divider line on right edge (connects visually to garden)
+  ctx.strokeStyle='rgba(255,255,255,0.08)';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(x+sw,y+12);ctx.lineTo(x+sw,y+sh-12);ctx.stroke();
+
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.font='30px serif';ctx.fillText('🌱',x+sw/2,cy-28);
+  ctx.font='bold 12px sans-serif';ctx.fillStyle='#fff';
+  ctx.shadowColor='#000';ctx.shadowBlur=3;
+  ctx.fillText('花種',x+sw/2,cy-5);
+  ctx.font='10px sans-serif';ctx.fillStyle=canBuy?'#FFD700':'#888';
+  ctx.fillText(`${SEEDS_PER_BUY}粒 / ${SEED_PRICE*SEEDS_PER_BUY}🪙`,x+sw/2,cy+12);
+  ctx.shadowBlur=0;
+
+  // Seed inventory badge
+  if(P_seeds>0){
+    ctx.fillStyle='#2ecc71';roundRect(x+sw/2-20,cy+24,40,18,9);ctx.fill();
+    ctx.font='bold 10px sans-serif';ctx.fillStyle='#fff';
+    ctx.fillText(`🌱 ×${P_seeds}`,x+sw/2,cy+33);
+  }else{
+    ctx.font='10px sans-serif';ctx.fillStyle='rgba(200,200,200,0.5)';
+    ctx.fillText('無種子',x+sw/2,cy+33);
+  }
+
+  // Buy progress bar
+  if(bt>0){
+    const prog=bt/1.5;
+    ctx.fillStyle='rgba(46,204,113,0.25)';roundRect(x+6,y+sh-10,sw-12,6,3);ctx.fill();
+    ctx.fillStyle='#2ecc71';roundRect(x+6,y+sh-10,(sw-12)*prog,6,3);ctx.fill();
+  }else if(canBuy){
+    const pulse=(Math.sin(Date.now()/500)+1)/2*0.3;
+    ctx.fillStyle=`rgba(46,204,113,${0.1+pulse})`;
+    roundRect(x+2,y+2,sw-4,sh-4,9);ctx.fill();
+  }
+}
+
+// ── V3: Flower Stand ──
+function drawFlowerStand(){
+  if(gamePhase<3)return;
+  const x=wx(FSTAND.x),y=wy(FSTAND.y);
+  const w=FSTAND.w,h=FSTAND.h;
+  if(x>VW+150||x+w<-150||y>VH+150||y+h<-150)return;
+  const cy=y+h/2;
+
+  if(FSTAND.level===0){
+    // Build site
+    const funded=FSTAND.woodDep>=FSTAND_BUILD.wood&&FSTAND.stoneDep>=FSTAND_BUILD.stone&&FSTAND.goldDep>=FSTAND_BUILD.gold;
+    const pulse=0.6+Math.sin(Date.now()/500)*0.4;
+    ctx.fillStyle='rgba(50,35,15,0.85)';roundRect(x,y,w,h,10);ctx.fill();
+    ctx.strokeStyle=`rgba(255,200,50,${pulse})`;ctx.lineWidth=2;ctx.setLineDash([5,4]);
+    roundRect(x,y,w,h,10);ctx.stroke();ctx.setLineDash([]);
+    ctx.font='28px serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('🏗️',x+w/2,cy-10);
+    ctx.font='bold 10px sans-serif';ctx.fillStyle='#FFD700';ctx.shadowColor='#000';ctx.shadowBlur=3;
+    ctx.fillText('花攤',x+w/2,cy+8);ctx.shadowBlur=0;
+    const allP=(FSTAND.woodDep/FSTAND_BUILD.wood+FSTAND.stoneDep/FSTAND_BUILD.stone)/2;
+    ctx.fillStyle='rgba(0,0,0,0.5)';roundRect(x+5,cy+18,w-10,5,2.5);ctx.fill();
+    ctx.fillStyle='#FFD700';roundRect(x+5,cy+18,(w-10)*allP,5,2.5);ctx.fill();
+    if(funded&&FSTAND.building){
+      const prog=FSTAND.buildTimer/2.5;ctx.fillStyle='#2ecc71';roundRect(x+5,cy+26,(w-10)*prog,4,2);ctx.fill();
+    }
+    return;
+  }
+
+  // ── Real stall structure ──
+  const cx=x+w/2;
+  // Wooden support posts
+  ctx.fillStyle='#6B3F1E';
+  ctx.fillRect(x+5,y-18,7,h+18);
+  ctx.fillRect(x+w-12,y-18,7,h+18);
+  // Post caps
+  ctx.fillStyle='#8B5E3C';
+  ctx.fillRect(x+3,y-20,11,5);ctx.fillRect(x+w-14,y-20,11,5);
+
+  // Canopy (striped awning)
+  const cw=w+20, cTop=y-30, cBot=y-10;
+  const stripes=5;
+  for(let i=0;i<stripes;i++){
+    ctx.fillStyle=i%2===0?'#E8266E':'#fff';
+    ctx.beginPath();
+    ctx.moveTo(x-10+i*(cw/stripes),cTop);
+    ctx.lineTo(x-10+(i+1)*(cw/stripes),cTop);
+    ctx.lineTo(x-10+(i+1)*(cw/stripes),cBot);
+    ctx.lineTo(x-10+i*(cw/stripes),cBot);
+    ctx.closePath();ctx.fill();
+  }
+  // Canopy fringe (scallops)
+  ctx.fillStyle='#C01858';
+  for(let i=0;i<7;i++){
+    const fx=x-10+i*(cw/6.5);
+    ctx.beginPath();ctx.arc(fx+cw/13,cBot+4,6,0,Math.PI);ctx.fill();
+  }
+  // Canopy outline
+  ctx.strokeStyle='#A01040';ctx.lineWidth=1.5;
+  ctx.strokeRect(x-10,cTop,cw,cBot-cTop);
+
+  // Stall body / wall (back panel)
+  ctx.fillStyle='#F5D6A0';
+  roundRect(x+4,y,w-8,h*0.6,4);ctx.fill();
+  ctx.strokeStyle='#C4903A';ctx.lineWidth=1;roundRect(x+4,y,w-8,h*0.6,4);ctx.stroke();
+
+  // Counter / table front
+  ctx.fillStyle='#D4975A';
+  roundRect(x,y+h*0.45,w,h*0.38,4);ctx.fill();
+  ctx.fillStyle='#B07840';
+  roundRect(x,y+h*0.45,w,5,2);ctx.fill();
+  ctx.fillStyle='#C48850';
+  ctx.fillRect(x+3,y+h*0.45+5,w-6,h*0.33-3);
+
+  // Flower display on counter
+  ctx.font='13px serif';ctx.textAlign='center';ctx.textBaseline='middle';
+  const dispY=y+h*0.46+7;
+  const flowers=['🌸','🌼','🌺'];
+  for(let i=0;i<3;i++){
+    const bob=Math.sin(Date.now()/700+i)*1.5;
+    ctx.fillText(flowers[i],x+18+i*22,dispY+bob);
+  }
+
+  // Sign banner
+  ctx.fillStyle='#B01050';
+  roundRect(cx-20,y-28,40,14,4);ctx.fill();
+  ctx.font='bold 9px sans-serif';ctx.fillStyle='#fff';ctx.shadowColor='#000';ctx.shadowBlur=2;
+  ctx.fillText('花攤',cx,y-21);ctx.shadowBlur=0;
+
+  // Inventory badge (stock count)
+  if(FSTAND.inventory>0){
+    ctx.fillStyle='rgba(255,230,100,0.92)';roundRect(x+w-22,y-8,22,14,4);ctx.fill();
+    ctx.fillStyle='#333';ctx.font='bold 8px sans-serif';ctx.textAlign='center';
+    ctx.fillText(`🌸${FSTAND.inventory}`,x+w-11,y-1);
+  }
+}
+
+// ── Stand customers ──
+function drawStandCustomers(){
+  if(gamePhase<3||FSTAND.level===0)return;
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  for(const c of standCustomers){
+    const x=wx(c.x),y=wy(c.y);
+    if(x<-40||x>VW+40||y<-40||y>VH+40)continue;
+    // Shadow
+    ctx.fillStyle='rgba(0,0,0,0.18)';ctx.beginPath();ctx.ellipse(x,y+12,9,3,0,0,Math.PI*2);ctx.fill();
+    // Customer emoji
+    ctx.font='20px serif';ctx.fillText(c.emoji,x,y);
+    if(c.state==='waiting'||c.state==='approaching'){
+      // Speech bubble
+      const bx=x+2,by=y-28,bw=46,bh=22;
+      ctx.fillStyle='rgba(255,255,255,0.95)';roundRect(bx-bw/2,by-bh/2,bw,bh,6);ctx.fill();
+      ctx.strokeStyle='#FF69B4';ctx.lineWidth=1.5;roundRect(bx-bw/2,by-bh/2,bw,bh,6);ctx.stroke();
+      // Bubble tail
+      ctx.fillStyle='rgba(255,255,255,0.95)';
+      ctx.beginPath();ctx.moveTo(bx-4,by+bh/2-1);ctx.lineTo(bx+4,by+bh/2-1);ctx.lineTo(bx,by+bh/2+5);ctx.closePath();ctx.fill();
+      ctx.strokeStyle='#FF69B4';ctx.lineWidth=1;ctx.stroke();
+      // Want text
+      ctx.fillStyle='#333';ctx.font='11px serif';
+      ctx.fillText(`🌸×${c.want}`,bx,by);
+      // Wait bar
+      if(c.state==='waiting'){
+        const barW=38,barX=bx-barW/2,barY=by+bh/2+8;
+        const prog=c.waitTimer/(20+10*0.5);
+        ctx.fillStyle='rgba(0,0,0,0.25)';roundRect(barX,barY,barW,4,2);ctx.fill();
+        ctx.fillStyle=prog>0.4?'#2ecc71':'#e74c3c';roundRect(barX,barY,barW*Math.max(0,prog),4,2);ctx.fill();
+      }
+    } else if(c.state==='happy'){
+      ctx.font='18px serif';ctx.fillText('😊',x,y-22);
+    }
+  }
+}
+
+// ── V3: Pet Shops ──
+function drawPetShops(){
+  if(gamePhase<3)return;
+  for(const ps of petShops){
+    if(ps.owned)continue; // owned pets shown in HUD, not world
+    const x=wx(ps.x),y=wy(ps.y);
+    if(x>VW+120||x+ps.w<-120)continue;
+    const cy=y+ps.h/2;
+    ctx.fillStyle=ps.owned?'rgba(30,60,30,0.9)':(P.gold>=ps.cost?'rgba(30,20,50,0.9)':'rgba(35,25,15,0.88)');
+    roundRect(x,y,ps.w,ps.h,10);ctx.fill();
+    ctx.strokeStyle=ps.owned?'#2ecc71':(P.gold>=ps.cost?'rgba(200,180,255,0.7)':'rgba(100,80,40,0.6)');
+    ctx.lineWidth=2;roundRect(x,y,ps.w,ps.h,10);ctx.stroke();
+    // Divider on left
+    ctx.strokeStyle='rgba(255,255,255,0.07)';ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(x,y+10);ctx.lineTo(x,y+ps.h-10);ctx.stroke();
+    const bob=Math.sin(Date.now()/800+ps.x*0.01)*2;
+    ctx.font='28px serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(ps.emoji,x+ps.w/2,cy-14+bob);
+    ctx.font='bold 10px sans-serif';ctx.fillStyle='#fff';ctx.shadowColor='#000';ctx.shadowBlur=3;
+    ctx.fillText(ps.name,x+ps.w/2,cy+3);
+    if(ps.owned){
+      ctx.fillStyle='#2ecc71';ctx.font='9px sans-serif';ctx.fillText('✓ 已擁有',x+ps.w/2,cy+17);
+    }else{
+      ctx.fillStyle=P.gold>=ps.cost?'#FFD700':'#777';ctx.font='9px sans-serif';
+      ctx.fillText(`${ps.cost}🪙`,x+ps.w/2,cy+17);
+      if(ps.buyTimer>0){
+        const prog=ps.buyTimer/BUY_TIME;
+        ctx.fillStyle='rgba(180,140,255,0.2)';roundRect(x+5,y+ps.h-10,ps.w-10,6,3);ctx.fill();
+        ctx.fillStyle='#a78bfa';roundRect(x+5,y+ps.h-10,(ps.w-10)*prog,6,3);ctx.fill();
+      }else if(P.gold>=ps.cost){
+        const p=(Math.sin(Date.now()/500)+1)/2*0.25;
+        ctx.fillStyle=`rgba(167,139,250,${0.08+p})`;roundRect(x+2,y+2,ps.w-4,ps.h-4,9);ctx.fill();
+      }
+    }
+    ctx.shadowBlur=0;
+    // Effect badge
+    ctx.font='8px sans-serif';ctx.fillStyle='rgba(200,255,200,0.7)';ctx.fillText(ps.desc,x+ps.w/2,y+ps.h+10);
+  }
+}
+
+// ── Trees / Rocks ──
+function drawTree(t){
+  const x=wx(t.x),y=wy(t.y);
+  if(x<-55||x>VW+55||y<-55||y>VH+55)return;
+  ctx.save();ctx.translate(x,y);
+  if(t.dead)ctx.globalAlpha=0.18;
+  if(t.falling){
+    const ease=1-Math.pow(1-t.fallAngle/(Math.PI/2),3);
+    ctx.translate(0,20);ctx.rotate(ease*(Math.PI/2)*t.fallDir);ctx.translate(0,-20);
+    ctx.globalAlpha=Math.max(0.1,1-ease*0.7);
+  }else if(t.shake>0)ctx.rotate(Math.sin(Date.now()/42)*t.shake*0.28);
+  if(t.sc<1)ctx.scale(t.sc,t.sc);
+  ctx.font='40px serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('🌲',0,0);
+  if(!t.dead&&!t.falling&&t.hp<t.maxHp)for(let i=0;i<t.maxHp;i++){
+    ctx.fillStyle=i<t.hp?'#2ecc71':'#e74c3c';ctx.beginPath();ctx.arc(-10+i*10,25,4,0,Math.PI*2);ctx.fill();
+  }
+  ctx.restore();
+}
+function drawRock(r){
+  const x=wx(r.x),y=wy(r.y);
+  if(x<-55||x>VW+55||y<-55||y>VH+55)return;
+  ctx.save();ctx.translate(x,y);
+  if(r.dead)ctx.globalAlpha=0.18;
+  if(r.shake>0)ctx.translate(Math.sin(Date.now()/38)*r.shake*4,0);
+  ctx.font='34px serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('🪨',0,0);
+  if(!r.dead&&r.hp<r.maxHp)for(let i=0;i<r.maxHp;i++){
+    ctx.fillStyle=i<r.hp?'#e67e22':'#e74c3c';ctx.beginPath();ctx.arc(-10+i*10,21,4,0,Math.PI*2);ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ── Market ──
+function drawMarket(){
+  const x=wx(MARKET.x),y=wy(MARKET.y);
+  if(x<-130||x>VW+130)return;
+  ctx.fillStyle='rgba(0,0,0,0.5)';roundRect(x+2,y-30,118,22,6);ctx.fill();
+  ctx.fillStyle='#f1c40f';ctx.font='bold 10px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText('🪵→5🪙 🪨→8🪙 🌸→15🪙',x+56,y-19);
+  ctx.font='76px serif';ctx.textAlign='left';ctx.textBaseline='top';ctx.fillText('🏪',x-8,y-14);
+  ctx.font='bold 13px sans-serif';ctx.fillStyle='#fff';ctx.textAlign='center';
+  ctx.shadowColor='#000';ctx.shadowBlur=4;ctx.fillText('市集',x+46,y+72);ctx.shadowBlur=0;
+}
+
+// ── Shops ──
+function drawShops(){
+  for(const s of SHOPS){
+    const x=wx(s.x),y=wy(s.y);
+    if(x<-130||x>VW+130)continue;
+    const cost=upgCost(s.type),canBuy=cost!==null&&P.gold>=cost,maxed=cost===null;
+    ctx.globalAlpha=0.88;ctx.fillStyle=maxed?'#555':(canBuy?'#27ae60':'#636e72');
+    roundRect(x,y,s.w,s.h,10);ctx.fill();ctx.globalAlpha=1;
+    ctx.strokeStyle=maxed?'#888':(canBuy?'#2ecc71':'#95a5a6');ctx.lineWidth=2;roundRect(x,y,s.w,s.h,10);ctx.stroke();
+    ctx.font='28px serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(s.emoji,x+s.w/2,y+22);
+    ctx.font='bold 11px sans-serif';ctx.fillStyle='#fff';ctx.fillText(s.label,x+s.w/2,y+40);
+    if(maxed){ctx.fillStyle='#FFD700';ctx.font='bold 10px sans-serif';ctx.fillText('MAX',x+s.w/2,y+56);}
+    else{ctx.fillStyle=canBuy?'#FFD700':'#bdc3c7';ctx.font='11px sans-serif';ctx.fillText(`${cost}🪙`,x+s.w/2,y+56);}
+    if(P.buyTarget===s&&canBuy){
+      const prog=P.buyTimer/BUY_TIME;
+      ctx.fillStyle='rgba(255,215,0,0.35)';roundRect(x+4,y+s.h-8,s.w-8,5,3);ctx.fill();
+      ctx.fillStyle='#FFD700';roundRect(x+4,y+s.h-8,(s.w-8)*prog,5,3);ctx.fill();
+    }
+    const lvl=UPG[s.type],maxL=MAX_UPG[s.type];
+    for(let i=0;i<maxL;i++){
+      ctx.fillStyle=i<lvl?'#FFD700':'rgba(255,255,255,0.2)';
+      ctx.beginPath();ctx.arc(x+8+i*(s.w-16)/(maxL-1),y+8,4,0,Math.PI*2);ctx.fill();
+    }
+  }
+}
+
+// ── Carried items ──
+function drawCarriedItems(cx,cy,wood,stone,flowers,bob){
+  const cols=[];
+  if(wood>0)   cols.push({emoji:'🪵',count:wood,  color:'#CD853F'});
+  if(stone>0)  cols.push({emoji:'🪨',count:stone, color:'#bbb'});
+  if(flowers>0)cols.push({emoji:'🌸',count:flowers,color:'#FF69B4'});
+  if(cols.length===0)return;
+
+  const fSize=12, vSp=fSize*0.78;
+  const baseY=cy-22-bob;
+  const colGap=cols.length===1?0:cols.length===2?11:9;
+  const startX=cx-(cols.length-1)*colGap/2;
+
+  ctx.save();ctx.font=`${fSize}px serif`;ctx.textAlign='center';ctx.textBaseline='middle';
+  cols.forEach((col,ci)=>{
+    const colX=startX+ci*colGap, CAP=12, show=Math.min(col.count,CAP);
+    for(let i=0;i<show;i++){
+      const iy=baseY-i*vSp, wobX=Math.sin(i*1.7+ci*1.2)*1.2;
+      ctx.save();ctx.translate(colX+wobX,iy);ctx.rotate(Math.sin(i*1.3+ci)*0.08);ctx.fillText(col.emoji,0,0);ctx.restore();
+    }
+    if(col.count>CAP){
+      ctx.font='bold 8px sans-serif';ctx.fillStyle=col.color;
+      ctx.shadowColor='#000';ctx.shadowBlur=2;
+      ctx.fillText(`+${col.count-CAP}`,colX,baseY-CAP*vSp-4);ctx.shadowBlur=0;ctx.font=`${fSize}px serif`;
+    }
+  });
+  ctx.restore();
+}
+
+// ── Player ──
+function drawPlayer(){
+  const x=wx(P.x),y=wy(P.y);
+  const bob=P.moving?Math.sin(P.frame*Math.PI/2)*2.5:0;
+  ctx.fillStyle='rgba(0,0,0,0.28)';ctx.beginPath();ctx.ellipse(x,y+15,14,5,0,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(x,y-2+bob,17,0,Math.PI*2);
+  ctx.fillStyle='#e67e22';ctx.fill();ctx.strokeStyle='#fff';ctx.lineWidth=2.5;ctx.stroke();
+  drawCarriedItems(x,y,P.wood,P.stone,P.flowers,bob);
+  ctx.font='32px serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('🧑‍🌾',x,y-2+bob);
+  if(P.harvestTarget&&P.harvestTimer>0){
+    ctx.beginPath();ctx.strokeStyle='#FFD700';ctx.lineWidth=3;
+    ctx.arc(x,y-2,21,-Math.PI/2,-Math.PI/2+Math.PI*2*(P.harvestTimer/HARVEST_TIME));ctx.stroke();
+  }
+}
+
+// ── Worker ──
+function drawWorkerSprite(w){
+  const x=wx(w.x),y=wy(w.y);
+  if(x<-45||x>VW+45||y<-45||y>VH+45)return;
+  const bob=Math.sin(w.frame*Math.PI/2)*2;
+  drawCarriedItems(x,y,w.wood,w.stone,0,bob);
+  ctx.font='26px serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('👷',x,y+bob);
+}
+function drawFlowerWorkerSprite(fw){
+  const x=wx(fw.x),y=wy(fw.y);
+  if(x<-45||x>VW+45||y<-45||y>VH+45)return;
+  const bob=Math.sin(fw.frame*Math.PI/2)*2.2;
+  // Pink backing disc to distinguish from regular workers
+  ctx.beginPath();ctx.arc(x,y-1+bob,13,0,Math.PI*2);
+  ctx.fillStyle='#c0426a';ctx.fill();
+  ctx.strokeStyle='#FFB6C1';ctx.lineWidth=2;ctx.stroke();
+  drawCarriedItems(x,y,0,0,fw.flowers,bob);
+  ctx.font='24px serif';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText('👩‍🌾',x,y-1+bob);
+}
+
+// ── Pet sprites (canvas-drawn) ──
+const PET_DISC_COLORS=['rgba(230,140,40,0.35)','rgba(160,100,50,0.32)','rgba(200,120,185,0.35)'];
+function drawPetSprite(pet){
+  const x=wx(pet.px),y=wy(pet.py);
+  if(x<-40||x>VW+40||y<-40||y>VH+40)return;
+  const jz=pet.jumpZ||0;
+  const bob=Math.sin(pet.bobPhase)*(pet.state==='sleep'?0.6:2.2);
+  const isSleep=pet.state==='sleep';
+  const isRest=pet.state==='rest';
+  const ey=y-jz+bob;
+  // Shadow
+  const ss=Math.max(0.3,1-jz/55);
+  ctx.fillStyle=`rgba(0,0,0,${0.22*ss})`;
+  ctx.beginPath();ctx.ellipse(x,y+13,isSleep?13*ss:9*ss,isSleep?5*ss:3.5*ss,0,0,Math.PI*2);ctx.fill();
+
+  ctx.save();ctx.translate(x,ey);
+  if(isSleep)ctx.rotate(0.42);
+
+  if(pet.id==='cat'){
+    // ══ CAT (橘貓) ══
+    const B='#E09040',D='#B86E28',P='#FFB0C8',W='#F8DCA0',BK='#1a1209';
+    // Tail
+    ctx.strokeStyle=B;ctx.lineWidth=3;ctx.lineCap='round';
+    ctx.beginPath();ctx.moveTo(7,6);ctx.bezierCurveTo(17,5,19,-8,12,-14);ctx.stroke();
+    // Body
+    ctx.fillStyle=B;ctx.beginPath();ctx.ellipse(0,5,8.5,6.5,0,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle=W;ctx.beginPath();ctx.ellipse(0,6,4.5,4,0,0,Math.PI*2);ctx.fill();
+    // Head
+    ctx.fillStyle=B;ctx.beginPath();ctx.arc(0,-4,8,0,Math.PI*2);ctx.fill();
+    // Ears
+    ctx.fillStyle=D;
+    ctx.beginPath();ctx.moveTo(-7,-9);ctx.lineTo(-5,-18);ctx.lineTo(-1,-10);ctx.closePath();ctx.fill();
+    ctx.beginPath();ctx.moveTo(1,-10);ctx.lineTo(5,-18);ctx.lineTo(7,-9);ctx.closePath();ctx.fill();
+    ctx.fillStyle=P;
+    ctx.beginPath();ctx.moveTo(-6,-11);ctx.lineTo(-5,-16);ctx.lineTo(-2,-11);ctx.closePath();ctx.fill();
+    ctx.beginPath();ctx.moveTo(2,-11);ctx.lineTo(5,-16);ctx.lineTo(6,-11);ctx.closePath();ctx.fill();
+    // Stripes on forehead
+    ctx.strokeStyle=D;ctx.lineWidth=0.8;
+    ctx.beginPath();ctx.moveTo(-3,-10);ctx.lineTo(-2,-7);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(0,-11);ctx.lineTo(0,-8);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(3,-10);ctx.lineTo(2,-7);ctx.stroke();
+    // Eyes
+    if(!isSleep){
+      ctx.fillStyle='#40DF80';
+      ctx.beginPath();ctx.ellipse(-3,-4.5,2.8,2,-0.1,0,Math.PI*2);ctx.fill();
+      ctx.beginPath();ctx.ellipse(3,-4.5,2.8,2,0.1,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle=BK;
+      ctx.beginPath();ctx.ellipse(-3,-4.5,1,2,0,0,Math.PI*2);ctx.fill();
+      ctx.beginPath();ctx.ellipse(3,-4.5,1,2,0,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle='rgba(255,255,255,0.8)';
+      ctx.beginPath();ctx.arc(-2,-5.5,0.7,0,Math.PI*2);ctx.fill();
+      ctx.beginPath();ctx.arc(3.8,-5.5,0.7,0,Math.PI*2);ctx.fill();
+    }else{
+      ctx.strokeStyle=BK;ctx.lineWidth=1.3;ctx.lineCap='round';
+      ctx.beginPath();ctx.moveTo(-5.5,-4.5);ctx.quadraticCurveTo(-3,-2.8,-0.5,-4.5);ctx.stroke();
+      ctx.beginPath();ctx.moveTo(0.5,-4.5);ctx.quadraticCurveTo(3,-2.8,5.5,-4.5);ctx.stroke();
+    }
+    // Nose & mouth
+    ctx.fillStyle=P;ctx.beginPath();ctx.arc(0,-1.5,1.8,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle=D;ctx.lineWidth=0.9;ctx.lineCap='round';
+    ctx.beginPath();ctx.moveTo(0,-0.2);ctx.lineTo(-2,1.8);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(0,-0.2);ctx.lineTo(2,1.8);ctx.stroke();
+    // Whiskers
+    ctx.strokeStyle='rgba(255,255,220,0.75)';ctx.lineWidth=0.7;
+    [-1,0.5,2].forEach(dy=>{
+      ctx.beginPath();ctx.moveTo(-2,dy);ctx.lineTo(-10,dy-0.5);ctx.stroke();
+      ctx.beginPath();ctx.moveTo(2,dy);ctx.lineTo(10,dy-0.5);ctx.stroke();
+    });
+
+  }else if(pet.id==='dog'){
+    // ══ DOG (旺財柴犬) ══
+    const B='#C87030',D='#9A5018',L='#E8A060',BK='#1a0e06',W='#F4EAD8';
+    // Tail (wags when moving)
+    const tWag=(isRest||isSleep)?0:Math.sin(Date.now()/160)*0.5;
+    ctx.save();ctx.translate(8,2);ctx.rotate(tWag);
+    ctx.strokeStyle=B;ctx.lineWidth=4;ctx.lineCap='round';
+    ctx.beginPath();ctx.moveTo(0,0);ctx.quadraticCurveTo(7,-3,9,-11);ctx.stroke();
+    ctx.restore();
+    // Body
+    ctx.fillStyle=B;ctx.beginPath();ctx.ellipse(0,5,9,7,0,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle=L;ctx.beginPath();ctx.ellipse(0,6,5.5,4.5,0,0,Math.PI*2);ctx.fill();
+    // Head
+    ctx.fillStyle=B;ctx.beginPath();ctx.arc(0,-4,8.5,0,Math.PI*2);ctx.fill();
+    // Cheek patches
+    ctx.fillStyle=L;
+    ctx.beginPath();ctx.ellipse(-5.5,-2,3,2.5,0,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.ellipse(5.5,-2,3,2.5,0,0,Math.PI*2);ctx.fill();
+    // Snout
+    ctx.fillStyle=W;ctx.beginPath();ctx.ellipse(0,-1,5.5,4,0,0,Math.PI*2);ctx.fill();
+    // Ears (pointed shiba)
+    ctx.fillStyle=B;
+    ctx.beginPath();ctx.moveTo(-8,-6);ctx.lineTo(-7,-16);ctx.lineTo(-1,-9);ctx.closePath();ctx.fill();
+    ctx.beginPath();ctx.moveTo(8,-6);ctx.lineTo(7,-16);ctx.lineTo(1,-9);ctx.closePath();ctx.fill();
+    ctx.fillStyle=D;
+    ctx.beginPath();ctx.moveTo(-7,-8);ctx.lineTo(-7,-14);ctx.lineTo(-2,-9);ctx.closePath();ctx.fill();
+    ctx.beginPath();ctx.moveTo(7,-8);ctx.lineTo(7,-14);ctx.lineTo(2,-9);ctx.closePath();ctx.fill();
+    // Eyes
+    if(!isSleep){
+      ctx.fillStyle=BK;
+      ctx.beginPath();ctx.arc(-3,-5.5,2.2,0,Math.PI*2);ctx.fill();
+      ctx.beginPath();ctx.arc(3,-5.5,2.2,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle='rgba(255,255,255,0.85)';
+      ctx.beginPath();ctx.arc(-2.2,-6.2,0.75,0,Math.PI*2);ctx.fill();
+      ctx.beginPath();ctx.arc(3.8,-6.2,0.75,0,Math.PI*2);ctx.fill();
+    }else{
+      ctx.strokeStyle=BK;ctx.lineWidth=1.3;ctx.lineCap='round';
+      ctx.beginPath();ctx.moveTo(-5.5,-5.5);ctx.quadraticCurveTo(-3,-3.8,-0.5,-5.5);ctx.stroke();
+      ctx.beginPath();ctx.moveTo(0.5,-5.5);ctx.quadraticCurveTo(3,-3.8,5.5,-5.5);ctx.stroke();
+    }
+    // Nose
+    ctx.fillStyle=BK;ctx.beginPath();ctx.ellipse(0,-0.5,3,2.2,0,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#2a1a0a';
+    ctx.beginPath();ctx.arc(-1.2,-0.2,0.75,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.arc(1.2,-0.2,0.75,0,Math.PI*2);ctx.fill();
+    // Tongue when chasing
+    if(!isSleep&&!isRest&&pet.state==='chase'){
+      ctx.fillStyle='#FF4466';ctx.beginPath();ctx.ellipse(0,2.5,2.5,3,0,Math.PI,Math.PI*2);ctx.fill();
+      ctx.fillStyle='#DD2244';ctx.beginPath();ctx.moveTo(-2.5,2.5);ctx.lineTo(2.5,2.5);ctx.stroke();
+    }
+
+  }else{
+    // ══ BIRD (小鳥) ══
+    const B='#5599EE',BL='#3366CC',Y='#FFCC22',W='#fff',BK='#111';
+    // Tail feathers
+    ctx.fillStyle=BL;
+    ctx.beginPath();ctx.moveTo(8,4);ctx.lineTo(16,1);ctx.lineTo(14,7);ctx.closePath();ctx.fill();
+    ctx.beginPath();ctx.moveTo(8,5);ctx.lineTo(16,8);ctx.lineTo(14,11);ctx.closePath();ctx.fill();
+    // Wing
+    if(!isSleep){
+      const wingFlap=pet.state==='wander'||pet.state==='chase'?Math.sin(Date.now()/90)*3:0;
+      ctx.fillStyle=BL;
+      ctx.beginPath();ctx.ellipse(-1,3,8,4+wingFlap,0.3,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle=B;
+      ctx.beginPath();ctx.ellipse(-1,2,6,3+wingFlap*0.7,0.3,0,Math.PI*2);ctx.fill();
+    }else{
+      ctx.fillStyle=BL;ctx.beginPath();ctx.ellipse(-1,4,7,3,-0.2,0,Math.PI*2);ctx.fill();
+    }
+    // Body
+    ctx.fillStyle=B;ctx.beginPath();ctx.ellipse(0,4,7,6,0,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle=W;ctx.beginPath();ctx.ellipse(0,5,4,4,0,0,Math.PI*2);ctx.fill();
+    // Head
+    ctx.fillStyle=B;ctx.beginPath();ctx.arc(0,-3,6,0,Math.PI*2);ctx.fill();
+    // Crest
+    ctx.fillStyle=BL;ctx.beginPath();ctx.moveTo(-2,-8);ctx.lineTo(0,-14);ctx.lineTo(2,-8);ctx.closePath();ctx.fill();
+    ctx.fillStyle='#88BBFF';ctx.beginPath();ctx.moveTo(-1,-9);ctx.lineTo(0,-13);ctx.lineTo(1,-9);ctx.closePath();ctx.fill();
+    // Beak
+    ctx.fillStyle=Y;
+    ctx.beginPath();ctx.moveTo(-3,-2);ctx.lineTo(-8,-1);ctx.lineTo(-3,1);ctx.closePath();ctx.fill();
+    // Eye
+    if(!isSleep){
+      ctx.fillStyle=BK;ctx.beginPath();ctx.arc(-2,-4,2,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle=W;ctx.beginPath();ctx.arc(-1.3,-4.6,0.6,0,Math.PI*2);ctx.fill();
+    }else{
+      ctx.strokeStyle=BK;ctx.lineWidth=1.2;ctx.lineCap='round';
+      ctx.beginPath();ctx.moveTo(-4,-4);ctx.quadraticCurveTo(-2,-2.5,-0.5,-4);ctx.stroke();
+    }
+  }
+
+  ctx.restore();
+
+  // Cuddle hearts ♥
+  if(pet.state==='cuddle'){
+    const t=Date.now()/1000;
+    [0,1].forEach(i=>{
+      const hx=x+(i===0?-10:8), hy=ey-22-i*10+Math.sin(t*2.5+i*1.8)*3;
+      ctx.globalAlpha=0.55+Math.sin(t*2+i)*0.35;
+      ctx.fillStyle=i===0?'#FF4488':'#FF88BB';
+      ctx.font=`${i===0?13:10}px serif`;
+      ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('♥',hx,hy);
+    });
+    ctx.globalAlpha=1;
+  }
+
+  // Sleep ZZZs
+  if(isSleep){
+    const t=Date.now()/1000;
+    ['z','z','Z'].forEach((z,i)=>{
+      const zx=x+13+i*6, zy=ey-14-i*8+Math.sin(t*1.3+i)*2;
+      ctx.globalAlpha=0.38+0.22*(1-i/3);
+      ctx.fillStyle='#c0d8f0';ctx.font=`${8+i*2}px sans-serif`;
+      ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(z,zx,zy);
+    });
+    ctx.globalAlpha=1;
+  }
+  // Rest indicator
+  if(isRest){
+    ctx.globalAlpha=0.5;ctx.fillStyle='#d0e8d0';ctx.font='10px serif';
+    ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('…',x+14,ey-16);
+    ctx.globalAlpha=1;
+  }
+}
+function drawPetBall(){
+  if(!petBall.active)return;
+  const x=wx(petBall.x),y=wy(petBall.y);
+  const bob=Math.sin(petBall.bounce)*3.5;
+  // Draw a tennis-ball-like sphere — pops bigger for an instant right after a kick
+  const kf=petBall.kickFlash>0?petBall.kickFlash/0.25:0;
+  const r=6*(1+kf*0.8);
+  const by=y+bob;
+  ctx.fillStyle='rgba(0,0,0,0.18)';ctx.beginPath();ctx.ellipse(x,y+14,7,2.5,0,0,Math.PI*2);ctx.fill();
+  if(kf>0){ctx.strokeStyle=`rgba(255,220,80,${kf*0.8})`;ctx.lineWidth=2;ctx.beginPath();ctx.arc(x,by,r+5,0,Math.PI*2);ctx.stroke();}
+  ctx.fillStyle='#CCDD44';ctx.beginPath();ctx.arc(x,by,r,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle='#fff';ctx.lineWidth=1.2;
+  ctx.beginPath();ctx.moveTo(x-r*0.85,by-2);ctx.bezierCurveTo(x-r*0.35,by+3,x+r*0.35,by+3,x+r*0.85,by-2);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(x-r*0.85,by+2);ctx.bezierCurveTo(x-r*0.35,by-3,x+r*0.35,by-3,x+r*0.85,by+2);ctx.stroke();
+}
+
+// ── V4: Mushroom Forest ──
+function drawMushroomForest(){
+  const x=wx(MFOREST_X),y=wy(MFOREST_Y),w=MFOREST_W,h=MFOREST_H;
+  if(x>VW+50||x+w<-50||y>VH+50||y+h<-50)return;
+
+  // Forest floor
+  ctx.fillStyle='rgba(20,50,15,0.72)';roundRect(x,y,w,h,14);ctx.fill();
+  ctx.strokeStyle='#7B3FA0';ctx.lineWidth=3;ctx.setLineDash([6,4]);
+  roundRect(x,y,w,h,14);ctx.stroke();ctx.setLineDash([]);
+
+  // Title
+  ctx.font='bold 13px sans-serif';ctx.fillStyle='#DDA0FF';
+  ctx.shadowColor='#000';ctx.shadowBlur=4;ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText('🌲 魔法森林 🌲',x+w/2,y+14);ctx.shadowBlur=0;
+
+  // Draw mushrooms
+  for(const m of mushrooms){
+    const mx=wx(m.x),my=wy(m.y);
+    if(mx<x-20||mx>x+w+20||my<y-20||my>y+h+20)continue;
+    if(!m.ready){
+      // Regrow indicator
+      const p=m.timer/MUSHROOM_GROW;
+      ctx.globalAlpha=0.3;
+      ctx.fillStyle='#888';ctx.font='12px serif';ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText('🌿',mx,my);
+      ctx.globalAlpha=0.6;
+      ctx.fillStyle='rgba(0,0,0,0.4)';roundRect(mx-10,my+8,20,4,2);ctx.fill();
+      ctx.fillStyle='#4CAF50';roundRect(mx-10,my+8,20*p,4,2);ctx.fill();
+      ctx.globalAlpha=1;
+      continue;
+    }
+    // Mushroom cap (red with white spots)
+    ctx.fillStyle='rgba(0,0,0,0.2)';ctx.beginPath();ctx.ellipse(mx,my+10,8,3,0,0,Math.PI*2);ctx.fill();
+    // Stem
+    ctx.fillStyle='#F5DEB3';ctx.fillRect(mx-4,my+2,8,10);
+    // Cap
+    ctx.fillStyle='#CC2200';
+    ctx.beginPath();ctx.arc(mx,my-2,11,Math.PI,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.ellipse(mx,my-2,11,5,0,0,Math.PI);ctx.fill();
+    // Spots
+    ctx.fillStyle='rgba(255,255,255,0.85)';
+    [[0,-8,2.5],[5,-4,2],[-5,-5,2]].forEach(([sx,sy,sr])=>{
+      ctx.beginPath();ctx.arc(mx+sx,my+sy,sr,0,Math.PI*2);ctx.fill();
+    });
+    // Bob
+    const bob=Math.sin(Date.now()/700+m.id)*1.5;
+  }
+  // 25g label
+  ctx.font='9px sans-serif';ctx.fillStyle='rgba(255,220,100,0.8)';ctx.textAlign='center';
+  ctx.fillText('🍄 = 25🪙',x+w/2,y+h-10);
+}
+
+// ── V4: Warehouse ──
+function drawWarehouse(){
+  const{x:wx2,y:wy2,w,h,level}=WAREHOUSE;
+  const x=wx(wx2),y=wy(wy2);
+  if(x>VW+100||x+w<-100||y>VH+100||y+h<-100)return;
+  const cx=x+w/2, cy=y+h/2;
+
+  if(level===0){
+    // Build site
+    const funded=WAREHOUSE.woodDep>=WAREHOUSE_COST.wood&&WAREHOUSE.stoneDep>=WAREHOUSE_COST.stone;
+    const pulse=0.6+Math.sin(Date.now()/500)*0.4;
+    ctx.fillStyle='rgba(40,30,10,0.82)';roundRect(x,y,w,h,10);ctx.fill();
+    ctx.strokeStyle=`rgba(255,200,50,${pulse})`;ctx.lineWidth=2;ctx.setLineDash([5,4]);
+    roundRect(x,y,w,h,10);ctx.stroke();ctx.setLineDash([]);
+    ctx.font='26px serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('🏗️',cx,cy-10);
+    ctx.font='bold 9px sans-serif';ctx.fillStyle='#FFD700';ctx.shadowColor='#000';ctx.shadowBlur=3;
+    ctx.fillText('倉庫',cx,cy+6);
+    ctx.font='8px sans-serif';ctx.fillStyle='#ccc';ctx.fillText('🪵20+🪨15',cx,cy+19);ctx.shadowBlur=0;
+    const allP=(WAREHOUSE.woodDep/WAREHOUSE_COST.wood+WAREHOUSE.stoneDep/WAREHOUSE_COST.stone)/2;
+    ctx.fillStyle='rgba(0,0,0,0.5)';roundRect(x+5,y+h-10,w-10,5,2.5);ctx.fill();
+    ctx.fillStyle='#FFD700';roundRect(x+5,y+h-10,(w-10)*allP,5,2.5);ctx.fill();
+    return;
+  }
+
+  // Built warehouse
+  // Base
+  ctx.fillStyle='#8B5A2B';roundRect(x,y+h*0.3,w,h*0.7,4);ctx.fill();
+  ctx.strokeStyle='#5C3A1A';ctx.lineWidth=1.5;roundRect(x,y+h*0.3,w,h*0.7,4);ctx.stroke();
+  // Roof (pitched)
+  ctx.fillStyle='#5C3A1A';
+  ctx.beginPath();ctx.moveTo(x-4,y+h*0.3);ctx.lineTo(cx,y);ctx.lineTo(x+w+4,y+h*0.3);ctx.closePath();ctx.fill();
+  ctx.strokeStyle='rgba(0,0,0,0.3)';ctx.lineWidth=1;ctx.stroke();
+  // Door
+  ctx.fillStyle='#3A1A08';roundRect(cx-10,y+h*0.55,20,h*0.45,2);ctx.fill();
+  // Barrel icon
+  ctx.font='22px serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('🪣',cx,y+h*0.42);
+  // Label
+  ctx.font='bold 9px sans-serif';ctx.fillStyle='#FFD700';ctx.shadowColor='#000';ctx.shadowBlur=3;
+  ctx.fillText('倉庫 ×2容量',cx,y-8);ctx.shadowBlur=0;
+}
+
+// ── V5: Town Hall ──
+function drawTownHall(){
+  const{x:tx,y:ty,w,h,level,building,buildTimer}=TOWNHALL;
+  const x=wx(tx),y=wy(ty);
+  if(x>VW+150||x+w<-150||y>VH+150||y+h<-150)return;
+  const cx=x+w/2, cy=y+h/2;
+
+  if(level===0){
+    // Build site with progress bars for all 5 resources
+    const pulse=0.55+Math.sin(Date.now()/400)*0.45;
+    ctx.fillStyle='rgba(20,15,35,0.88)';roundRect(x,y,w,h,14);ctx.fill();
+    ctx.strokeStyle=`rgba(200,180,255,${pulse})`;ctx.lineWidth=2.5;ctx.setLineDash([6,4]);
+    roundRect(x,y,w,h,14);ctx.stroke();ctx.setLineDash([]);
+    ctx.font='32px serif';ctx.textAlign='center';ctx.textBaseline='middle';
+    const crane=building?'🔨':'🏗️';
+    ctx.fillText(crane,cx,cy-20);
+    ctx.font='bold 11px sans-serif';ctx.fillStyle='#DDA0FF';
+    ctx.shadowColor='#000';ctx.shadowBlur=4;
+    ctx.fillText('市政廳',cx,cy+2);ctx.shadowBlur=0;
+    ctx.font='7px sans-serif';ctx.fillStyle='#ccc';
+    ctx.fillText('🪵80 🪨80 🪙500 🌸20 🍄10',cx,cy+18);
+
+    // 5 deposit bars
+    const bars=[
+      {dep:TOWNHALL.woodDep,   tot:TOWNHALL_COST.wood,    color:'#CD853F', label:`🪵${TOWNHALL.woodDep}/${TOWNHALL_COST.wood}`},
+      {dep:TOWNHALL.stoneDep,  tot:TOWNHALL_COST.stone,   color:'#aaa',    label:`🪨${TOWNHALL.stoneDep}/${TOWNHALL_COST.stone}`},
+      {dep:TOWNHALL.goldDep,   tot:TOWNHALL_COST.gold,    color:'#FFD700', label:`🪙${TOWNHALL.goldDep}/${TOWNHALL_COST.gold}`},
+      {dep:TOWNHALL.flowersDep,tot:TOWNHALL_COST.flowers, color:'#FF69B4', label:`🌸${TOWNHALL.flowersDep}/${TOWNHALL_COST.flowers}`},
+      {dep:TOWNHALL.mushroomDep,tot:TOWNHALL_COST.mushrooms,color:'#FF8800',label:`🍄${TOWNHALL.mushroomDep}/${TOWNHALL_COST.mushrooms}`},
+    ];
+    const bw=w-12, startY=cy+26;
+    ctx.font='7px sans-serif';ctx.textAlign='left';ctx.textBaseline='middle';
+    bars.forEach((b,i)=>{
+      const by=startY+i*12;const p=b.dep/b.tot;
+      ctx.fillStyle='rgba(0,0,0,0.5)';roundRect(x+6,by,bw,7,3);ctx.fill();
+      ctx.fillStyle=b.color;roundRect(x+6,by,bw*p,7,3);ctx.fill();
+    });
+
+    if(building){
+      const prog=buildTimer/6.0;
+      ctx.font='bold 9px sans-serif';ctx.fillStyle='#00FF88';ctx.textAlign='center';
+      ctx.fillText('建造中...',cx,startY+5*12+8);
+      ctx.fillStyle='rgba(0,0,0,0.5)';roundRect(cx-40,startY+5*12+14,80,7,3);ctx.fill();
+      ctx.fillStyle='#00FF88';roundRect(cx-40,startY+5*12+14,80*prog,7,3);ctx.fill();
+    }
+    return;
+  }
+
+  // Built town hall — grand building
+  ctx.fillStyle='rgba(0,0,0,0.3)';ctx.beginPath();ctx.ellipse(cx,y+h+4,w*0.7,8,0,0,Math.PI*2);ctx.fill();
+  // Main body
+  ctx.fillStyle='#E8E0C8';roundRect(x+8,y+h*0.25,w-16,h*0.75+2,4);ctx.fill();
+  ctx.strokeStyle='#B0A090';ctx.lineWidth=2;roundRect(x+8,y+h*0.25,w-16,h*0.75+2,4);ctx.stroke();
+  // Dome / pediment
+  ctx.fillStyle='#4466AA';
+  ctx.beginPath();ctx.moveTo(x,y+h*0.25);ctx.lineTo(cx,y);ctx.lineTo(x+w,y+h*0.25);ctx.closePath();ctx.fill();
+  ctx.strokeStyle='#334488';ctx.lineWidth=1.5;ctx.stroke();
+  // Columns
+  ctx.fillStyle='#F0ECE0';
+  for(let i=0;i<4;i++){
+    const colX=x+18+i*((w-36)/3), colH=h*0.55;
+    ctx.fillRect(colX-4,y+h*0.25,8,colH);
+    ctx.fillStyle='#E0D8C8';ctx.fillRect(colX-5,y+h*0.25-3,10,6);ctx.fillRect(colX-5,y+h*0.25+colH-3,10,6);
+    ctx.fillStyle='#F0ECE0';
+  }
+  // Door
+  ctx.fillStyle='#3A2808';roundRect(cx-10,y+h*0.65,20,h*0.35+2,3);ctx.fill();
+  ctx.fillStyle='#A8843C';ctx.beginPath();ctx.arc(cx,y+h*0.65,10,Math.PI,Math.PI*2);ctx.fill();
+  // Flag
+  ctx.strokeStyle='#888';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(cx,y);ctx.lineTo(cx,y-30);ctx.stroke();
+  ctx.fillStyle='#FF3333';ctx.beginPath();ctx.moveTo(cx,y-30);ctx.lineTo(cx+18,y-23);ctx.lineTo(cx,y-16);ctx.closePath();ctx.fill();
+  // Label
+  ctx.font='bold 12px sans-serif';ctx.fillStyle='#FFD700';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.shadowColor='#000';ctx.shadowBlur=5;ctx.fillText('🏛️ 市政廳',cx,y-40);ctx.shadowBlur=0;
+}
+
+// ── Win Screen ──
+function drawWinScreen(){
+  // Overlay
+  ctx.fillStyle='rgba(0,0,0,0.75)';ctx.fillRect(0,0,VW,VH);
+  // Fireworks particles burst
+  const t=Date.now()/800;
+  for(let i=0;i<8;i++){
+    const fx=VW*0.2+Math.sin(t+i*0.9)*VW*0.4, fy=VH*0.3+Math.cos(t*0.7+i)*VH*0.25;
+    ctx.globalAlpha=0.5+Math.sin(t*3+i)*0.4;
+    ctx.font='20px serif';ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText(['🎆','🎇','✨','⭐','🌟'][i%5],fx,fy);
+  }
+  ctx.globalAlpha=1;
+  // Panel
+  const pw=380,ph=200,px=VW/2-pw/2,py=VH/2-ph/2;
+  ctx.fillStyle='rgba(10,5,25,0.95)';roundRect(px,py,pw,ph,18);ctx.fill();
+  ctx.strokeStyle='#FFD700';ctx.lineWidth=3;
+  const glow=0.7+Math.sin(t*2)*0.3;
+  ctx.shadowColor='#FFD700';ctx.shadowBlur=20*glow;roundRect(px,py,pw,ph,18);ctx.stroke();ctx.shadowBlur=0;
+  // Title
+  ctx.font='bold 32px sans-serif';ctx.fillStyle='#FFD700';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.shadowColor='#000';ctx.shadowBlur=6;ctx.fillText('🎉 你建成了小鎮！',VW/2,py+52);ctx.shadowBlur=0;
+  // Stats
+  const mins=Math.floor(totalPlayTime/60), secs=Math.floor(totalPlayTime%60);
+  ctx.font='14px sans-serif';ctx.fillStyle='#eee';
+  ctx.fillText(`⏱️ 遊玩時間：${mins}分${secs}秒`,VW/2,py+92);
+  ctx.fillText(`🪙 累計收入：${totalGoldEarned} 金幣`,VW/2,py+116);
+  ctx.fillText(`👷 工人數：${workers.length}  🌸 花圃：${flowerWorkers.length}人`,VW/2,py+140);
+  ctx.font='bold 15px sans-serif';ctx.fillStyle='#FF88BB';
+  ctx.fillText('感謝遊玩！🌲森林小屋🌲',VW/2,py+170);
+}
+
+// ── FW Shop ──
+function drawFWShop(){
+  if(gamePhase<2)return;
+  const{x:sx,y:sy,w:sw,h:sh,buyTimer:bt}=FW_SHOP;
+  const x=wx(sx),y=wy(sy);
+  if(x<-120||x>VW+120||y<-120||y>VH+120)return;
+  const maxed=flowerWorkers.length>=FW_SHOP.MAX;
+  const canBuy=!maxed&&P.gold>=FW_COST;
+  const cy=y+sh/2;
+
+  // Panel
+  ctx.fillStyle=maxed?'rgba(50,35,15,0.88)':(canBuy?'rgba(80,20,50,0.88)':'rgba(50,35,15,0.88)');
+  roundRect(x,y,sw,sh,10);ctx.fill();
+  ctx.strokeStyle=maxed?'rgba(120,80,40,0.7)':(canBuy?'#FF69B4':'rgba(120,80,40,0.7)');
+  ctx.lineWidth=2;roundRect(x,y,sw,sh,10);ctx.stroke();
+
+  // Divider line on left edge
+  ctx.strokeStyle='rgba(255,255,255,0.08)';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(x,y+12);ctx.lineTo(x,y+sh-12);ctx.stroke();
+
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.font='30px serif';ctx.fillText('👩‍🌾',x+sw/2,cy-28);
+  ctx.font='bold 12px sans-serif';ctx.fillStyle='#fff';
+  ctx.shadowColor='#000';ctx.shadowBlur=3;
+  ctx.fillText('採花工人',x+sw/2,cy-5);
+  ctx.shadowBlur=0;
+
+  if(maxed){
+    ctx.fillStyle='#FFD700';ctx.font='bold 11px sans-serif';ctx.fillText('全滿',x+sw/2,cy+12);
+  }else{
+    ctx.fillStyle=canBuy?'#FFD700':'#888';ctx.font='10px sans-serif';
+    ctx.fillText(`${FW_COST} 🪙`,x+sw/2,cy+12);
+  }
+
+  // Worker dot counter
+  const dotR=6, dotGap=dotR*2+5, dotStartX=x+sw/2-(FW_SHOP.MAX-1)*dotGap/2;
+  for(let i=0;i<FW_SHOP.MAX;i++){
+    ctx.beginPath();ctx.arc(dotStartX+i*dotGap,cy+30,dotR,0,Math.PI*2);
+    ctx.fillStyle=i<flowerWorkers.length?'#FF69B4':'rgba(255,255,255,0.15)';ctx.fill();
+    ctx.strokeStyle=i<flowerWorkers.length?'#FFB6C1':'rgba(255,255,255,0.3)';
+    ctx.lineWidth=1.5;ctx.stroke();
+    if(i<flowerWorkers.length){ctx.font='8px serif';ctx.fillStyle='#fff';ctx.fillText('🌸',dotStartX+i*dotGap,cy+30);}
+  }
+
+  // Buy progress bar
+  if(bt>0){
+    const prog=bt/BUY_TIME;
+    ctx.fillStyle='rgba(255,105,180,0.2)';roundRect(x+6,y+sh-10,sw-12,6,3);ctx.fill();
+    ctx.fillStyle='#FF69B4';roundRect(x+6,y+sh-10,(sw-12)*prog,6,3);ctx.fill();
+  }else if(canBuy){
+    const pulse=(Math.sin(Date.now()/500)+1)/2*0.3;
+    ctx.fillStyle=`rgba(255,105,180,${0.08+pulse})`;
+    roundRect(x+2,y+2,sw-4,sh-4,9);ctx.fill();
+  }
+}
+
+// ── Particles ──
+function drawParticles(){
+  for(const p of parts){
+    const x=wx(p.x),y=wy(p.y);
+    if(x<-60||x>VW+60)continue;
+    ctx.globalAlpha=Math.max(0,p.life/p.max);
+    ctx.font='bold 13px sans-serif';ctx.fillStyle=p.color;
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.shadowColor='#000';ctx.shadowBlur=4;ctx.fillText(p.text,x,y);ctx.shadowBlur=0;ctx.globalAlpha=1;
+  }
+}
+
+// ── Minimap ──
+function drawMinimap(){
+  const MW=100,MH=75,MX=VW-MW-8,MY=8,PAD=2;
+  ctx.fillStyle='rgba(0,0,0,0.55)';roundRect(MX-PAD,MY-PAD,MW+PAD*2,MH+PAD*2,5);ctx.fill();
+  const sx=v=>MX+(v/WW)*MW,sy=v=>MY+(v/WH)*MH;
+  // With bird owned, show all resource positions clearly
+  const showAll=birdOwned();
+  ctx.fillStyle='#2ecc71';for(const t of trees)if(!t.dead){ctx.beginPath();ctx.arc(sx(t.x),sy(t.y),showAll?3:2,0,Math.PI*2);ctx.fill();}
+  ctx.fillStyle='#bdc3c7';for(const r of rocks)if(!r.dead){ctx.beginPath();ctx.arc(sx(r.x),sy(r.y),showAll?3:2,0,Math.PI*2);ctx.fill();}
+  if(gamePhase>=4){ctx.fillStyle='#FF8800';for(const m of mushrooms)if(m.ready){ctx.beginPath();ctx.arc(sx(m.x),sy(m.y),2,0,Math.PI*2);ctx.fill();}}
+  ctx.fillStyle='#f39c12';ctx.fillRect(sx(MARKET.x)-3,sy(MARKET.y)-3,6,6);
+  if(gamePhase>=1){
+    ctx.fillStyle=HSTATE.level>0?'#e67e22':'#FFD700';
+    ctx.fillRect(sx(HOUSE_X)-4,sy(HOUSE_Y)-4,8,8);
+  }
+  if(gamePhase>=2)for(const p of flowerPatches){
+    ctx.fillStyle=p.state==='ready'?'#FF69B4':'#90EE90';
+    ctx.beginPath();ctx.arc(sx(p.x),sy(p.y),2.5,0,Math.PI*2);ctx.fill();
+  }
+  ctx.fillStyle='#3498db';for(const w of workers){ctx.beginPath();ctx.arc(sx(w.x),sy(w.y),2.5,0,Math.PI*2);ctx.fill();}
+  ctx.fillStyle='#FF69B4';for(const fw of flowerWorkers){ctx.beginPath();ctx.arc(sx(fw.x),sy(fw.y),2.5,0,Math.PI*2);ctx.fill();}
+  ctx.fillStyle='#e74c3c';ctx.beginPath();ctx.arc(sx(P.x),sy(P.y),3.5,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,0.4)';ctx.lineWidth=1;
+  ctx.strokeRect(sx(cam.x),sy(cam.y),(VW/WW)*MW,(VH/WH)*MH);
+}
+
+// ── Joystick ──
+function drawJoystick(){
+  if(!isMobile&&!JOY.active)return;
+  const{bx,by,r,kr,kx,ky,active}=JOY;
+  ctx.beginPath();ctx.arc(bx,by,r,0,Math.PI*2);
+  ctx.fillStyle=active?'rgba(255,255,255,0.12)':'rgba(255,255,255,0.07)';ctx.fill();
+  ctx.strokeStyle=active?'rgba(255,255,255,0.5)':'rgba(255,255,255,0.2)';ctx.lineWidth=2;ctx.stroke();
+  ctx.fillStyle='rgba(255,255,255,0.2)';ctx.font='11px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText('▲',bx,by-r+10);ctx.fillText('▼',bx,by+r-10);ctx.fillText('◀',bx-r+10,by);ctx.fillText('▶',bx+r-10,by);
+  ctx.beginPath();ctx.arc(bx+kx,by+ky,kr,0,Math.PI*2);
+  ctx.fillStyle=active?'rgba(255,255,255,0.55)':'rgba(255,255,255,0.25)';ctx.fill();
+  ctx.strokeStyle=active?'rgba(255,255,255,0.8)':'rgba(255,255,255,0.4)';ctx.lineWidth=2;ctx.stroke();
+}
+
+// ─── HUD ──────────────────────────────────────
+function drawHUD(){
+  const Y=VH;
+  ctx.fillStyle='rgba(15,20,15,0.88)';ctx.fillRect(0,Y,VW,HUD_H);
+  ctx.fillStyle='rgba(255,255,255,0.07)';ctx.fillRect(0,Y,VW,1);
+  const cy=Y+HUD_H/2;
+
+  // Gold
+  ctx.font='bold 22px sans-serif';ctx.fillStyle='#FFD700';ctx.textAlign='left';ctx.textBaseline='middle';
+  ctx.fillText(`🪙 ${P.gold}`,14,cy-7);
+  ctx.font='10px sans-serif';ctx.fillStyle='#888';ctx.fillText('金幣',16,cy+10);
+
+  // Seeds (if any)
+  if(P_seeds>0){
+    ctx.font='11px sans-serif';ctx.fillStyle='#90EE90';ctx.textAlign='left';ctx.textBaseline='middle';
+    ctx.fillText(`🌱×${P_seeds}`,14,cy+24);
+  }
+
+  // Center: inventory
+  const inv=inventory(),maxI=maxBag();
+  ctx.font='12px sans-serif';ctx.fillStyle='#ddd';ctx.textAlign='center';
+  const parts_txt=[(P.wood?`🪵${P.wood}`:''), (P.stone?`🪨${P.stone}`:''), (P.flowers?`🌸${P.flowers}`:''), (P_mushrooms>0?`🍄${P_mushrooms}`:'')].filter(Boolean).join('  ');
+  ctx.fillText(parts_txt||'空背包',VW/2,Y+12);
+  const bW=160,bH=13,bX=VW/2-bW/2,bY=Y+22;
+  ctx.fillStyle='#2c3e2c';roundRect(bX,bY,bW,bH,bH/2);ctx.fill();
+  ctx.fillStyle=inv>=maxI?'#e74c3c':inv>maxI*0.75?'#f39c12':'#3498db';
+  roundRect(bX,bY,bW*(inv/maxI),bH,bH/2);ctx.fill();
+  ctx.font='9px sans-serif';ctx.fillStyle='#fff';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText(`${inv}/${maxI}`,VW/2,bY+bH/2);
+  ctx.font='10px sans-serif';ctx.fillStyle='#777';ctx.fillText('背包容量',VW/2,Y+42);
+
+  // Right: upgrades + phase
+  ctx.textAlign='right';ctx.font='12px sans-serif';ctx.fillStyle='#ccc';ctx.textBaseline='middle';
+  ctx.fillText(`⚡Lv${UPG.speed}  🎒Lv${UPG.bag}  👷${workers.length}`,VW-12,cy-8);
+  ctx.font='10px sans-serif';ctx.fillStyle='#666';ctx.fillText('速度 ‧ 背包 ‧ 工人',VW-12,cy+8);
+
+  // Phase badge
+  if(gamePhase>0){
+    const phaseLabel=['','V1 建造中','V1 小木屋','V2 花園','V2 中型屋','V3 花攤寵物','V4 魔法森林','V5 莊園','🏆 完成！'][gamePhase]||'';
+    ctx.font='bold 10px sans-serif';ctx.fillStyle='#FFD700';ctx.textAlign='right';
+    ctx.fillText(phaseLabel,VW-12,cy+22);
+  }
+  // Owned pets row (small icons) — fixed at Y+54 to stay within HUD_H=72
+  const ownedPets=petShops.filter(p=>p.owned);
+  if(ownedPets.length>0){
+    const petRowY=Y+56; // centre of pet icon row
+    const px0=VW-12-ownedPets.length*24;
+    ctx.font='9px sans-serif';ctx.fillStyle='rgba(255,255,255,0.35)';ctx.textAlign='right';ctx.textBaseline='middle';
+    ctx.fillText('寵物',VW-12,Y+46);
+    ownedPets.forEach((pet,i)=>{
+      const px=px0+i*24+12;
+      ctx.fillStyle=PET_DISC_COLORS[petShops.indexOf(pet)]||'rgba(180,140,60,0.3)';
+      ctx.beginPath();ctx.arc(px,petRowY,10,0,Math.PI*2);ctx.fill();
+      ctx.font='14px serif';ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText(pet.emoji,px,petRowY);
+      const ps2=petShops.find(p2=>p2.id===pet.id);
+      if(ps2&&ps2.state){
+        const dotColor=ps2.state==='sleep'?'#6699bb':ps2.state==='rest'?'#aabb88':ps2.state==='cuddle'?'#ff66aa':'#66dd88';
+        ctx.fillStyle=dotColor;ctx.beginPath();ctx.arc(px+7,petRowY-7,3,0,Math.PI*2);ctx.fill();
+      }
+    });
+    ctx.textAlign='right';
+  }
+
+  // Hint
+  if(gamePhase===0&&UPG.speed+UPG.bag+UPG.workers===0&&P.gold<40){
+    ctx.font='10px sans-serif';ctx.fillStyle='rgba(255,255,150,0.6)';ctx.textAlign='center';
+    ctx.fillText('💡 砍樹採礦→走到🏪賣出→到右上角買升級',VW/2,Y+HUD_H-8);
+  }
+  if(gamePhase===1){
+    ctx.font='10px sans-serif';ctx.fillStyle='rgba(255,220,80,0.8)';ctx.textAlign='center';
+    const canBuild=P.wood>=BUILD_COST.wood&&P.stone>=BUILD_COST.stone;
+    ctx.fillText(canBuild?'💡 帶著木頭石頭走向📐建造小屋！':'💡 先累積 🪵×15 + 🪨×10，再去📐建造',VW/2,Y+HUD_H-8);
+  }
+}
+
+// ─── SAVE / LOAD ──────────────────────────────
+const SAVE_KEY='forest-cottage-save-v1';
+function collectSave(){
+  return{
+    v:1, gamePhase,
+    Px:P.x,Py:P.y,wood:P.wood,stone:P.stone,flowers:P.flowers,gold:P.gold,
+    upgSpeed:UPG.speed,upgBag:UPG.bag,upgWorkers:UPG.workers,
+    workersCount:workers.length,
+    houseLevel:HSTATE.level,
+    seeds:P_seeds,mushroomsHeld:P_mushrooms,
+    fstandLevel:FSTAND.level,fstandInv:FSTAND.inventory,
+    flowerWorkersCount:flowerWorkers.length,
+    patches:flowerPatches.map(p=>({s:p.state,g:p.growTimer})),
+    pets:petShops.map(p=>p.owned),
+    mushroomForest:mushrooms.map(m=>({r:m.ready,t:m.timer})),
+    warehouseLevel:WAREHOUSE.level,
+    townhallLevel:TOWNHALL.level,
+    totalPlayTime,totalGoldEarned,
+  };
+}
+function saveGame(){
+  try{ localStorage.setItem(SAVE_KEY,JSON.stringify(collectSave())); }catch(e){}
+}
+function loadGame(){
+  let d;
+  try{ const raw=localStorage.getItem(SAVE_KEY); if(!raw)return false; d=JSON.parse(raw); }catch(e){ return false; }
+  gamePhase=d.gamePhase||0;
+  UPG.speed=d.upgSpeed||0;UPG.bag=d.upgBag||0;UPG.workers=d.upgWorkers||0;
+  P.x=d.Px??P.x;P.y=d.Py??P.y;P.wood=d.wood||0;P.stone=d.stone||0;P.flowers=d.flowers||0;P.gold=d.gold||0;
+  for(let i=0;i<(d.workersCount||0);i++) workers.push(new WorkerAI(WW-300+i*55,200+i*60));
+  HSTATE.level=d.houseLevel||0;
+  P_seeds=d.seeds||0;P_mushrooms=d.mushroomsHeld||0;
+  FSTAND.level=d.fstandLevel||0;FSTAND.inventory=d.fstandInv||0;
+  for(let i=0;i<(d.flowerWorkersCount||0);i++) flowerWorkers.push(new FlowerWorkerAI(GDN.x+GDN_W+SHOP_GAP+SHOP_W/2, GDN.y+GDN_H/2+30));
+  if(gamePhase>=2){
+    initFlowerPatches();
+    (d.patches||[]).forEach((sp,i)=>{ if(flowerPatches[i]){flowerPatches[i].state=sp.s;flowerPatches[i].growTimer=sp.g;} });
+  }
+  (d.pets||[]).forEach((owned,i)=>{ if(petShops[i])petShops[i].owned=!!owned; });
+  if(gamePhase>=4){
+    initMushroomForest();
+    (d.mushroomForest||[]).forEach((sm,i)=>{ if(mushrooms[i]){mushrooms[i].ready=sm.r;mushrooms[i].timer=sm.t;} });
+  }
+  WAREHOUSE.level=d.warehouseLevel||0;
+  TOWNHALL.level=d.townhallLevel||0;
+  totalPlayTime=d.totalPlayTime||0;totalGoldEarned=d.totalGoldEarned||0;
+  cam.x=clamp(P.x-VW/2,0,WW-VW);cam.y=clamp(P.y-VH/2,0,WH-VH);
+  return true;
+}
+setInterval(saveGame,10000);
+window.addEventListener('beforeunload',saveGame);
+document.addEventListener('visibilitychange',()=>{ if(document.hidden)saveGame(); });
+
+// ── URL preview shortcut (skips save/load when used) ──
+const _previewMode=new URLSearchParams(location.search).get('preview');
+if(!_previewMode&&loadGame())showPetToast('💾','進度已讀取','歡迎回來！');
+if(_previewMode==='v2'){
+  UPG.speed=3;UPG.bag=3;
+  for(let i=0;i<3;i++) workers.push(new WorkerAI(WW-300+i*55,200+i*60));
+  gamePhase=2; HSTATE.level=1;
+  P.gold=180; P_seeds=3;
+  P.wood=4; P.stone=2; P.flowers=1;
+  initFlowerPatches();
+  flowerPatches[0].state='ready';
+  flowerPatches[1].state='growing'; flowerPatches[1].growTimer=18;
+  flowerPatches[3].state='growing'; flowerPatches[3].growTimer=6;
+  flowerPatches[5].state='ready';
+  flowerWorkers.push(new FlowerWorkerAI(GDN.x+GDN_W+SHOP_GAP+SHOP_W/2, GDN.y+GDN_H/2+30));
+  P.x=GDN.x+GDN_W/2; P.y=GDN.y-60;
+  cam.x=clamp(P.x-VW/2,0,WW-VW); cam.y=clamp(P.y-VH/2,0,WH-VH);
+}
+if(_previewMode==='v3'){
+  UPG.speed=3;UPG.bag=3;
+  for(let i=0;i<3;i++) workers.push(new WorkerAI(WW-300+i*55,200+i*60));
+  gamePhase=3; HSTATE.level=2;
+  FSTAND.level=1;  // flower stand already built
+  P.gold=500; P_seeds=5;
+  P.wood=4; P.stone=2; P.flowers=3;
+  initFlowerPatches();
+  flowerPatches[0].state='ready';
+  flowerPatches[1].state='ready';
+  flowerPatches[2].state='growing'; flowerPatches[2].growTimer=15;
+  flowerPatches[3].state='growing'; flowerPatches[3].growTimer=8;
+  flowerPatches[5].state='ready';
+  flowerPatches[6].state='growing'; flowerPatches[6].growTimer=22;
+  flowerWorkers.push(new FlowerWorkerAI(GDN.x+GDN_W+SHOP_GAP+SHOP_W/2, GDN.y+GDN_H/2+30));
+  // Position camera at V3 row
+  P.x=FSTAND.x+FSTAND.w/2+100; P.y=V3_ROW_Y-80;
+  cam.x=clamp(P.x-VW/2,0,WW-VW); cam.y=clamp(P.y-VH/2,0,WH-VH);
+}
+if(_previewMode==='v4'){
+  UPG.speed=3;UPG.bag=3;
+  for(let i=0;i<3;i++) workers.push(new WorkerAI(WW-300+i*55,200+i*60));
+  gamePhase=4; HSTATE.level=3;
+  FSTAND.level=1;
+  petShops[0].owned=true;
+  petShops[0].px=500;petShops[0].py=200;petShops[0].bobPhase=0;
+  petShops[0].wanderTx=500;petShops[0].wanderTy=200;petShops[0].wanderTimer=4;
+  petShops[0].jumpVel=0;petShops[0].jumpZ=0;petShops[0].state='cuddle';
+  P.gold=400; P_seeds=5;
+  initFlowerPatches();flowerPatches[0].state='ready';flowerPatches[1].state='growing';
+  flowerWorkers.push(new FlowerWorkerAI(GDN.x+GDN_W+SHOP_GAP+SHOP_W/2, GDN.y+GDN_H/2+30));
+  initMushroomForest();
+  P.x=MFOREST_X+MFOREST_W/2; P.y=MFOREST_Y-80;
+  cam.x=clamp(P.x-VW/2,0,WW-VW); cam.y=clamp(P.y-VH/2,0,WH-VH);
+}
+if(_previewMode==='v5'){
+  UPG.speed=3;UPG.bag=3;
+  for(let i=0;i<3;i++) workers.push(new WorkerAI(WW-300+i*55,200+i*60));
+  gamePhase=5; HSTATE.level=4; WAREHOUSE.level=1;
+  FSTAND.level=1;
+  petShops[0].owned=true;petShops[1].owned=true;
+  [petShops[0],petShops[1]].forEach((ps,i)=>{
+    ps.px=500+i*45;ps.py=250;ps.bobPhase=i;
+    ps.wanderTx=ps.px;ps.wanderTy=ps.py;ps.wanderTimer=3;ps.jumpVel=0;ps.jumpZ=0;ps.state='wander';
+  });
+  P.gold=800; P_seeds=5; P_mushrooms=8;
+  initFlowerPatches();flowerPatches[0].state='ready';
+  flowerWorkers.push(new FlowerWorkerAI(GDN.x+GDN_W+SHOP_GAP+SHOP_W/2, GDN.y+GDN_H/2+30));
+  initMushroomForest();
+  P.x=TOWNHALL.x+TOWNHALL.w/2; P.y=TOWNHALL.y-90;
+  cam.x=clamp(P.x-VW/2,0,WW-VW); cam.y=clamp(P.y-VH/2,0,WH-VH);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

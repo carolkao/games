@@ -1,0 +1,758 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>九九乘法消消樂</title>
+<style>
+  :root {
+    --cols: 8;
+    --rows: 10;
+    --cell: 56px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: linear-gradient(160deg, #fff3d6 0%, #e3f6ff 45%, #ffe1ef 100%);
+    color: #33324a;
+    font-family: -apple-system, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    overflow-x: hidden;
+  }
+  .bg-decor {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    overflow: hidden;
+  }
+  .bg-decor span {
+    position: absolute;
+    font-size: 2.6rem;
+    opacity: .28;
+    animation: drift 7s ease-in-out infinite;
+    filter: saturate(1.1);
+  }
+  @keyframes drift {
+    0%, 100% { transform: translateY(0) rotate(-6deg); }
+    50%      { transform: translateY(-22px) rotate(6deg); }
+  }
+  .game-wrap {
+    position: relative;
+    z-index: 1;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 16px;
+  }
+  h1 { margin: 4px 0; font-size: 1.5rem; color: #ff6b9d; text-shadow: 0 2px 0 #fff; }
+  .hud {
+    display: flex;
+    gap: 24px;
+    font-size: 1.15rem;
+    background: rgba(255,255,255,.7);
+    padding: 6px 18px;
+    border-radius: 999px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.08);
+  }
+  .hud b { color: #ff9f43; }
+  #board {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(var(--cols), var(--cell));
+    grid-template-rows: repeat(var(--rows), var(--cell));
+    gap: 4px;
+    background-color: #fffdf6;
+    background-image: repeating-linear-gradient(
+      to right,
+      rgba(79,195,247,.10) 0, rgba(79,195,247,.10) var(--cell),
+      rgba(255,107,157,.08) var(--cell), rgba(255,107,157,.08) calc(var(--cell) + 4px)
+    );
+    background-origin: content-box;
+    padding: 8px;
+    border-radius: 16px;
+    border: 4px solid #ffd166;
+    box-shadow: 0 8px 24px rgba(80,50,140,.15);
+  }
+  .cell {
+    width: var(--cell);
+    height: var(--cell);
+    border-radius: 10px;
+    background: transparent;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: #fff;
+    user-select: none;
+    transition: transform .12s, background .12s;
+  }
+  .cell.falling {
+    background: #4fc3f7;
+    box-shadow: 0 0 12px #4fc3f7cc;
+  }
+  .cell.settled {
+    background: #a78bfa;
+    box-shadow: inset 0 0 0 2px #ffffff55;
+  }
+  .cell.clearing {
+    background: #ffd166;
+    box-shadow: 0 0 18px #ffd166cc;
+    z-index: 2;
+    animation: cellPop .26s ease forwards;
+  }
+  @keyframes cellPop {
+    0%   { transform: scale(1); filter: brightness(1); }
+    40%  { transform: scale(1.35); filter: brightness(1.3); }
+    100% { transform: scale(0.2); filter: brightness(1.3); opacity: 0; }
+  }
+  .particle {
+    position: absolute;
+    width: 7px;
+    height: 7px;
+    margin: -3.5px 0 0 -3.5px;
+    border-radius: 50%;
+    background: var(--pcolor, #ffd166);
+    pointer-events: none;
+    animation: particleFly .5s ease-out forwards;
+  }
+  @keyframes particleFly {
+    0%   { transform: translate(0, 0) scale(1); opacity: 1; }
+    100% { transform: translate(var(--tx), var(--ty)) scale(.2); opacity: 0; }
+  }
+  .floatScore {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    font-weight: 800;
+    font-size: 1.25rem;
+    color: #ff6b9d;
+    text-shadow: 0 0 4px #fff, 0 2px 0 #fff;
+    pointer-events: none;
+    animation: floatUp .8s ease-out forwards;
+  }
+  @keyframes floatUp {
+    0%   { transform: translate(-50%, -50%); opacity: 1; }
+    100% { transform: translate(-50%, -140%); opacity: 0; }
+  }
+  .controls {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  button {
+    background: #4fc3f7;
+    color: #fff;
+    border: none;
+    border-radius: 999px;
+    padding: 10px 18px;
+    font-size: 1rem;
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: 0 3px 0 rgba(0,0,0,.15);
+  }
+  #downBtn { background: #a78bfa; }
+  #restartBtn, #overlayRestart { background: #ff6b9d; }
+  #musicBtn { background: #6bd67a; }
+  #pauseBtn { background: #ff9f43; }
+  button:active { transform: translateY(2px); box-shadow: 0 1px 0 rgba(0,0,0,.15); }
+  .board-wrap { position: relative; }
+  #pauseOverlay {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 6px;
+    background: rgba(51,50,74,.6);
+    border-radius: 16px;
+    color: #fff;
+    font-size: 1.6rem;
+    font-weight: 800;
+    text-align: center;
+    cursor: pointer;
+    z-index: 5;
+  }
+  #pauseOverlay span { font-size: 1rem; font-weight: 400; }
+  #pauseOverlay.show { display: flex; }
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(51,50,74,.75);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 12px;
+    text-align: center;
+    color: #fff;
+    z-index: 2;
+  }
+  .modal-overlay.show { display: flex; }
+  .overlay-card {
+    position: relative;
+    background: #fff8ea;
+    color: #33324a;
+    padding: 28px 36px;
+    border-radius: 20px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.3);
+    max-width: 90vw;
+  }
+  .overlay-card h2 { color: #ff6b9d; margin-top: 0; }
+  .modal-close {
+    display: none;
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border-radius: 50%;
+    background: #ff9f9f;
+    box-shadow: none;
+    font-size: 1rem;
+    line-height: 1;
+  }
+  .hint { opacity: .65; font-size: .9rem; text-align: center; max-width: 480px; }
+  .table-picker {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+    max-width: 320px;
+    margin: 14px auto;
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: #e3f6ff;
+    border: 2px solid #4fc3f7;
+    color: #33324a;
+    font-weight: 700;
+    cursor: pointer;
+    user-select: none;
+  }
+  .chip input { display: none; }
+  .chip:has(input:checked) { background: #4fc3f7; color: #fff; }
+  .setup-actions { display: flex; gap: 8px; justify-content: center; }
+  #settingsBtn { background: #a78bfa; }
+</style>
+</head>
+<body>
+  <div class="bg-decor">
+    <span style="left:5%; top:8%; animation-delay:0s;">🍎</span>
+    <span style="left:85%; top:12%; animation-delay:.6s; font-size:2.2rem;">⭐</span>
+    <span style="left:12%; top:70%; animation-delay:1.2s; font-size:3rem;">🎈</span>
+    <span style="left:78%; top:65%; animation-delay:.3s;">🍭</span>
+    <span style="left:90%; top:85%; animation-delay:1.6s; font-size:2rem;">🌈</span>
+    <span style="left:3%; top:40%; animation-delay:2s; font-size:2.2rem;">🍬</span>
+    <span style="left:50%; top:5%; animation-delay:.9s; font-size:2rem;">✨</span>
+    <span style="left:60%; top:88%; animation-delay:1.4s; font-size:2.4rem;">🎉</span>
+  </div>
+  <div class="game-wrap">
+    <h1>🍎 九九乘法消消樂</h1>
+    <div class="hud">
+      <div>分數: <b id="score">0</b></div>
+      <div>最高分: <b id="highscore">0</b></div>
+    </div>
+    <div class="board-wrap">
+      <div id="board"></div>
+      <div id="pauseOverlay">⏸ 暫停中<br><span>點一下繼續</span></div>
+    </div>
+    <div class="controls">
+      <button id="leftBtn">◀ 左</button>
+      <button id="downBtn">▼ 快降</button>
+      <button id="rightBtn">右 ▶</button>
+      <button id="pauseBtn">⏸ 暫停</button>
+      <button id="restartBtn">重新開始</button>
+      <button id="musicBtn">🔇 音樂</button>
+      <button id="settingsBtn">⚙️ 設定</button>
+    </div>
+    <div class="hint">左右鍵移動，↓鍵直接落下，空白鍵暫停。方塊落地後會顯示乘法結果，相鄰數字相同就會消除！</div>
+  </div>
+
+  <div id="setupOverlay" class="modal-overlay show">
+    <div class="overlay-card">
+      <button id="setupCloseBtn" class="modal-close" type="button">✕</button>
+      <h2>選擇要練習的乘法表</h2>
+      <div class="table-picker">
+        <label class="chip"><input type="checkbox" value="1">1</label>
+        <label class="chip"><input type="checkbox" value="2">2</label>
+        <label class="chip"><input type="checkbox" value="3">3</label>
+        <label class="chip"><input type="checkbox" value="4">4</label>
+        <label class="chip"><input type="checkbox" value="5">5</label>
+        <label class="chip"><input type="checkbox" value="6">6</label>
+        <label class="chip"><input type="checkbox" value="7">7</label>
+        <label class="chip"><input type="checkbox" value="8">8</label>
+        <label class="chip"><input type="checkbox" value="9">9</label>
+      </div>
+      <div class="setup-actions">
+        <button id="selectAllBtn" type="button">全選</button>
+        <button id="selectNoneBtn" type="button">全不選</button>
+      </div>
+      <button id="startGameBtn" style="margin-top:16px;">開始遊戲 ▶</button>
+    </div>
+  </div>
+
+  <div id="overlay" class="modal-overlay">
+    <div class="overlay-card">
+      <h2>遊戲結束</h2>
+      <p id="finalScore"></p>
+      <button id="overlayRestart">再玩一次</button>
+    </div>
+  </div>
+
+<script>
+const ROWS = 10;
+const MIN_COLS = 4, MAX_COLS = 8;
+let COLS = MAX_COLS;
+const HIGH_KEY = "times99_highscore";
+let selectedTables = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+const boardEl = document.getElementById("board");
+const scoreEl = document.getElementById("score");
+const highEl = document.getElementById("highscore");
+const overlayEl = document.getElementById("overlay");
+const finalScoreEl = document.getElementById("finalScore");
+
+const START_DROP_INTERVAL = 800;
+const MIN_DROP_INTERVAL = 350;
+const CELLS_PER_SPEEDUP = 8;
+
+let grid;          // grid[row][col] = null | {value, label}
+let falling;        // {row, col, x, y, value}
+let score = 0;
+let highScore = Number(localStorage.getItem(HIGH_KEY)) || 0;
+let dropInterval = START_DROP_INTERVAL;
+let dropTimer = null;
+let gameOver = false;
+let paused = false;
+let gameStarted = false;
+let resumeAfterSettings = false;
+let cellEls = [];
+let clearedCount = 0;
+
+function updateDifficulty() {
+  const next = Math.max(MIN_DROP_INTERVAL, START_DROP_INTERVAL - Math.floor(clearedCount / CELLS_PER_SPEEDUP) * 40);
+  if (next !== dropInterval) {
+    dropInterval = next;
+    clearInterval(dropTimer);
+    dropTimer = setInterval(tick, dropInterval);
+  }
+}
+
+highEl.textContent = highScore;
+
+function buildBoardDom() {
+  boardEl.innerHTML = "";
+  cellEls = [];
+  for (let r = 0; r < ROWS; r++) {
+    const row = [];
+    for (let c = 0; c < COLS; c++) {
+      const div = document.createElement("div");
+      div.className = "cell";
+      boardEl.appendChild(div);
+      row.push(div);
+    }
+    cellEls.push(row);
+  }
+}
+
+function randOperand() {
+  return 1 + Math.floor(Math.random() * 9);
+}
+
+// product -> all [x, y] pairs (1-9 each) that yield it, so we can re-roll a piece
+// matching a value already on the board (makes clears less rare, see README chat).
+const FACTOR_PAIRS = {};
+for (let x = 1; x <= 9; x++) {
+  for (let y = 1; y <= 9; y++) {
+    const p = x * y;
+    (FACTOR_PAIRS[p] || (FACTOR_PAIRS[p] = [])).push([x, y]);
+  }
+}
+const MATCH_BOARD_CHANCE = 0.4;
+
+// Only pairs where at least one operand is a table the player picked to practice.
+function validPairsFor(product) {
+  return FACTOR_PAIRS[product].filter(([x, y]) => selectedTables.has(x) || selectedTables.has(y));
+}
+
+function pickRandomPair() {
+  const tables = [...selectedTables];
+  const tableNum = tables[Math.floor(Math.random() * tables.length)];
+  const other = randOperand();
+  return Math.random() < 0.5 ? [tableNum, other] : [other, tableNum];
+}
+
+function pickOperands() {
+  const onBoard = new Set();
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) if (grid[r][c]) onBoard.add(grid[r][c].value);
+  }
+  if (onBoard.size && Math.random() < MATCH_BOARD_CHANCE) {
+    const values = [...onBoard];
+    const target = values[Math.floor(Math.random() * values.length)];
+    const pairs = validPairsFor(target);
+    if (pairs.length) return pairs[Math.floor(Math.random() * pairs.length)];
+  }
+  return pickRandomPair();
+}
+
+// More selected tables -> more distinct products -> a wider board so matches stay findable.
+function distinctProductCount() {
+  const set = new Set();
+  for (let x = 1; x <= 9; x++) {
+    for (let y = 1; y <= 9; y++) {
+      if (selectedTables.has(x) || selectedTables.has(y)) set.add(x * y);
+    }
+  }
+  return set.size;
+}
+
+function colsForDistinctCount(n) {
+  const cols = Math.round(MIN_COLS + (n - 9) / 27 * (MAX_COLS - MIN_COLS));
+  return Math.max(MIN_COLS, Math.min(MAX_COLS, cols));
+}
+
+function spawnPiece() {
+  const openCols = [];
+  for (let c = 0; c < COLS; c++) if (grid[0][c] === null) openCols.push(c);
+  const col = openCols[Math.floor(Math.random() * openCols.length)];
+  const [x, y] = pickOperands();
+  falling = { row: 0, col, x, y, value: x * y };
+}
+
+function canMoveTo(row, col) {
+  return col >= 0 && col < COLS && grid[row][col] === null;
+}
+
+function landingRow(col, fromRow) {
+  let r = fromRow;
+  while (r + 1 < ROWS && grid[r + 1][col] === null) r++;
+  return r;
+}
+
+function tick() {
+  if (gameOver || !falling) return;
+  const { row, col } = falling;
+  const isBottom = row + 1 >= ROWS || grid[row + 1][col] !== null;
+  if (isBottom) {
+    landPiece();
+  } else {
+    falling.row++;
+    render();
+  }
+}
+
+function landPiece() {
+  const { row, col, value } = falling;
+  grid[row][col] = { value };
+  falling = null;
+  resolveMatches(() => {
+    if (grid[0].some(cell => cell !== null)) {
+      endGame();
+    } else {
+      spawnPiece();
+    }
+    render();
+  });
+}
+
+// Flood-fill connected same-value groups (4-direction), clear, apply gravity, repeat.
+function resolveMatches(done) {
+  const group = findAnyGroup();
+  if (!group) { done(); return; }
+
+  const combo = (resolveMatches._combo || 0) + 1;
+  resolveMatches._combo = combo;
+  const gained = group.length * 10 * combo;
+
+  group.forEach(([r, c]) => cellEls[r][c].classList.add("clearing"));
+  spawnClearEffects(group, gained, combo);
+
+  setTimeout(() => {
+    group.forEach(([r, c]) => grid[r][c] = null);
+    addScore(gained);
+    clearedCount += group.length;
+    updateDifficulty();
+    collapseGravity();
+    render();
+    setTimeout(() => resolveMatches(done), 150);
+  }, 260);
+}
+
+function spawnClearEffects(group, gained, combo) {
+  group.forEach(([r, c]) => {
+    const div = cellEls[r][c];
+    spawnParticles(div.offsetLeft + div.offsetWidth / 2, div.offsetTop + div.offsetHeight / 2);
+  });
+  // anchor the popup to an actual cleared cell so it never lands in an empty gap
+  const [anchorR, anchorC] = group[Math.floor(group.length / 2)];
+  const anchorDiv = cellEls[anchorR][anchorC];
+  const label = combo > 1 ? `+${gained} x${combo}!` : `+${gained}`;
+  spawnFloatScore(anchorDiv.offsetLeft + anchorDiv.offsetWidth / 2, anchorDiv.offsetTop + anchorDiv.offsetHeight / 2, label);
+}
+
+const PARTICLE_COLORS = ["#ffd166", "#ff5d5d", "#6bd67a", "#63c7ff"];
+
+function spawnParticles(cx, cy) {
+  for (let i = 0; i < 5; i++) {
+    const p = document.createElement("div");
+    p.className = "particle";
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 22 + Math.random() * 26;
+    p.style.left = cx + "px";
+    p.style.top = cy + "px";
+    p.style.setProperty("--tx", Math.cos(angle) * dist + "px");
+    p.style.setProperty("--ty", Math.sin(angle) * dist + "px");
+    p.style.setProperty("--pcolor", PARTICLE_COLORS[Math.floor(Math.random() * PARTICLE_COLORS.length)]);
+    boardEl.appendChild(p);
+    p.addEventListener("animationend", () => p.remove());
+  }
+}
+
+function spawnFloatScore(x, y, label) {
+  const el = document.createElement("div");
+  el.className = "floatScore";
+  el.textContent = label;
+  el.style.left = x + "px";
+  el.style.top = y + "px";
+  boardEl.appendChild(el);
+  el.addEventListener("animationend", () => el.remove());
+}
+
+function findAnyGroup() {
+  const seen = Array.from({ length: ROWS }, () => new Array(COLS).fill(false));
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (!grid[r][c] || seen[r][c]) continue;
+      const group = floodFill(r, c, seen);
+      if (group.length >= 2) {
+        resolveMatches._combo = resolveMatches._combo || 0;
+        return group;
+      }
+    }
+  }
+  resolveMatches._combo = 0;
+  return null;
+}
+
+function floodFill(startR, startC, seen) {
+  const value = grid[startR][startC].value;
+  const stack = [[startR, startC]];
+  const group = [];
+  const localSeen = new Set();
+  while (stack.length) {
+    const [r, c] = stack.pop();
+    const key = r + "," + c;
+    if (localSeen.has(key)) continue;
+    localSeen.add(key);
+    if (r < 0 || r >= ROWS || c < 0 || c >= COLS) continue;
+    if (!grid[r][c] || grid[r][c].value !== value) continue;
+    group.push([r, c]);
+    seen[r][c] = true;
+    stack.push([r - 1, c], [r + 1, c], [r, c - 1], [r, c + 1]);
+  }
+  return group;
+}
+
+function collapseGravity() {
+  for (let c = 0; c < COLS; c++) {
+    const vals = [];
+    for (let r = 0; r < ROWS; r++) if (grid[r][c]) vals.push(grid[r][c]);
+    for (let r = ROWS - 1, i = vals.length - 1; r >= 0; r--, i--) {
+      grid[r][c] = i >= 0 ? vals[i] : null;
+    }
+  }
+}
+
+function addScore(n) {
+  score += n;
+  scoreEl.textContent = score;
+  if (score > highScore) {
+    highScore = score;
+    highEl.textContent = highScore;
+    localStorage.setItem(HIGH_KEY, String(highScore));
+  }
+}
+
+function render() {
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const div = cellEls[r][c];
+      div.classList.remove("falling", "settled", "clearing");
+      const settled = grid[r][c];
+      if (settled) {
+        div.textContent = settled.value;
+        div.classList.add("settled");
+      } else {
+        div.textContent = "";
+      }
+    }
+  }
+  if (falling) {
+    const div = cellEls[falling.row][falling.col];
+    div.textContent = `${falling.x}×${falling.y}`;
+    div.classList.add("falling");
+  }
+}
+
+function endGame() {
+  gameOver = true;
+  clearInterval(dropTimer);
+  finalScoreEl.textContent = `本次分數：${score}　最高分：${highScore}`;
+  overlayEl.classList.add("show");
+}
+
+function startGame() {
+  gameStarted = true;
+  COLS = colsForDistinctCount(distinctProductCount());
+  document.documentElement.style.setProperty("--cols", COLS);
+  grid = Array.from({ length: ROWS }, () => new Array(COLS).fill(null));
+  score = 0;
+  clearedCount = 0;
+  dropInterval = START_DROP_INTERVAL;
+  gameOver = false;
+  paused = false;
+  pauseBtn.textContent = "⏸ 暫停";
+  pauseOverlayEl.classList.remove("show");
+  scoreEl.textContent = "0";
+  overlayEl.classList.remove("show");
+  buildBoardDom();
+  spawnPiece();
+  render();
+  clearInterval(dropTimer);
+  dropTimer = setInterval(tick, dropInterval);
+}
+
+function togglePause() {
+  if (gameOver) return;
+  paused = !paused;
+  pauseBtn.textContent = paused ? "▶ 繼續" : "⏸ 暫停";
+  pauseOverlayEl.classList.toggle("show", paused);
+  if (paused) {
+    clearInterval(dropTimer);
+  } else {
+    dropTimer = setInterval(tick, dropInterval);
+  }
+}
+
+function moveFalling(dir) {
+  if (gameOver || paused || !falling) return;
+  const newCol = falling.col + dir;
+  if (canMoveTo(falling.row, newCol)) {
+    falling.col = newCol;
+    render();
+  }
+}
+
+function hardDrop() {
+  if (gameOver || paused || !falling) return;
+  falling.row = landingRow(falling.col, falling.row);
+  landPiece();
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "ArrowLeft") moveFalling(-1);
+  else if (e.key === "ArrowRight") moveFalling(1);
+  else if (e.key === "ArrowDown") hardDrop();
+  else if (e.key === " ") { e.preventDefault(); togglePause(); }
+  else if (e.key === "p" || e.key === "P") togglePause();
+});
+
+document.getElementById("leftBtn").onclick = () => moveFalling(-1);
+document.getElementById("rightBtn").onclick = () => moveFalling(1);
+document.getElementById("downBtn").onclick = hardDrop;
+document.getElementById("restartBtn").onclick = startGame;
+document.getElementById("overlayRestart").onclick = startGame;
+
+const pauseBtn = document.getElementById("pauseBtn");
+const pauseOverlayEl = document.getElementById("pauseOverlay");
+pauseBtn.onclick = togglePause;
+pauseOverlayEl.onclick = togglePause;
+
+// Cute little chiptune loop, synthesized on the fly (no audio files needed).
+const musicBtn = document.getElementById("musicBtn");
+let audioCtx = null;
+let musicOn = false;
+let musicTimer = null;
+let noteIndex = 0;
+
+const MELODY = [
+  [523.25, 0.22], [587.33, 0.22], [659.25, 0.22], [783.99, 0.22],
+  [659.25, 0.22], [587.33, 0.22], [523.25, 0.44],
+  [659.25, 0.22], [783.99, 0.22], [880.00, 0.22], [783.99, 0.22],
+  [659.25, 0.22], [523.25, 0.22], [587.33, 0.44],
+];
+
+function playNote(freq, dur) {
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = "triangle";
+  osc.frequency.value = freq;
+  const now = audioCtx.currentTime;
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(0.16, now + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start(now);
+  osc.stop(now + dur + 0.02);
+}
+
+function scheduleNextNote() {
+  if (!musicOn) return;
+  const [freq, dur] = MELODY[noteIndex];
+  playNote(freq, dur);
+  noteIndex = (noteIndex + 1) % MELODY.length;
+  musicTimer = setTimeout(scheduleNextNote, dur * 1000);
+}
+
+musicBtn.onclick = () => {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === "suspended") audioCtx.resume();
+  musicOn = !musicOn;
+  musicBtn.textContent = musicOn ? "🔊 音樂" : "🔇 音樂";
+  if (musicOn) scheduleNextNote();
+  else clearTimeout(musicTimer);
+};
+
+const setupOverlay = document.getElementById("setupOverlay");
+const setupCloseBtn = document.getElementById("setupCloseBtn");
+const startGameBtn = document.getElementById("startGameBtn");
+const tableCheckboxes = [...document.querySelectorAll(".table-picker input[type=checkbox]")];
+
+document.getElementById("selectAllBtn").onclick = () => tableCheckboxes.forEach(cb => cb.checked = true);
+document.getElementById("selectNoneBtn").onclick = () => tableCheckboxes.forEach(cb => cb.checked = false);
+document.getElementById("settingsBtn").onclick = () => {
+  resumeAfterSettings = !paused && !gameOver;
+  clearInterval(dropTimer);
+  setupCloseBtn.style.display = gameStarted ? "flex" : "none";
+  setupOverlay.classList.add("show");
+};
+
+setupCloseBtn.onclick = () => {
+  setupOverlay.classList.remove("show");
+  if (resumeAfterSettings) {
+    dropTimer = setInterval(tick, dropInterval);
+  }
+};
+
+startGameBtn.onclick = () => {
+  const chosen = tableCheckboxes.filter(cb => cb.checked).map(cb => Number(cb.value));
+  selectedTables = new Set(chosen.length ? chosen : [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  setupOverlay.classList.remove("show");
+  startGame();
+};
+</script>
+</body>
+</html>
