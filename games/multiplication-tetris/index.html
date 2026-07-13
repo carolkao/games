@@ -63,17 +63,15 @@
     box-shadow: 0 2px 8px rgba(0,0,0,.08);
   }
   .hud b { color: #ff9f43; }
-  #nextPiece {
-    display: inline-flex;
+  .topbar {
+    display: flex;
     align-items: center;
     justify-content: center;
-    min-width: 46px;
-    height: 34px;
-    padding: 0 8px;
-    border-radius: 8px;
-    background: #4fc3f7;
-    color: #fff;
-    box-shadow: inset 0 0 0 2px #ffffff55;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .next-preview {
+    flex: 0 0 auto;
   }
   #board {
     position: relative;
@@ -306,6 +304,7 @@
       min-height: 100svh;
     }
     h1 { font-size: 1.15rem; margin: 0; }
+    .topbar { gap: 8px; }
     .hud {
       gap: 10px;
       padding: 5px 10px;
@@ -358,10 +357,12 @@
   </div>
   <div class="game-wrap">
     <h1>🍎 九九乘法消消樂</h1>
-    <div class="hud">
-      <div>分數: <b id="score">0</b></div>
-      <div>最高分: <b id="highscore">0</b></div>
-      <div>下一題: <b id="nextPiece">--</b></div>
+    <div class="topbar">
+      <div class="hud">
+        <div>分數: <b id="score">0</b></div>
+        <div>最高分: <b id="highscore">0</b></div>
+      </div>
+      <div id="nextPiece" class="cell falling next-preview">--</div>
     </div>
     <div class="board-wrap">
       <div id="board"></div>
