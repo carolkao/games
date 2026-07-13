@@ -269,7 +269,7 @@
   .setup-actions { display: flex; gap: 8px; justify-content: center; }
   .review-table {
     display: grid;
-    grid-template-columns: repeat(3, minmax(72px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
     gap: 8px;
     max-height: min(52vh, 420px);
     overflow: auto;
@@ -282,6 +282,7 @@
     padding: 8px 6px;
     font-weight: 800;
   }
+  .review-table b { display: block; margin-bottom: 4px; color: #ff6b9d; }
   #settingsBtn { background: #a78bfa; }
   @media (max-width: 700px) {
     :root { --cell: min(48px, calc((100vw - 48px) / var(--cols)), calc((100svh - 150px) / 10)); }
@@ -926,11 +927,9 @@ const tableCheckboxes = [...document.querySelectorAll(".table-picker input[type=
 function showReview() {
   reviewTableEl.innerHTML = "";
   [...selectedTables].sort((a, b) => a - b).forEach(n => {
-    for (let i = 1; i <= 9; i++) {
-      const div = document.createElement("div");
-      div.textContent = `${n}×${i}=${n * i}`;
-      reviewTableEl.appendChild(div);
-    }
+    const div = document.createElement("div");
+    div.innerHTML = `<b>${n} 的乘法</b>` + Array.from({ length: 9 }, (_, i) => `${n}×${i + 1}=${n * (i + 1)}`).join("<br>");
+    reviewTableEl.appendChild(div);
   });
   reviewOverlayEl.classList.add("show");
 }
