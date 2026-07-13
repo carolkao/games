@@ -160,7 +160,8 @@
     box-shadow: 0 3px 0 rgba(0,0,0,.15);
   }
   #downBtn { background: #a78bfa; }
-  #restartBtn, #overlayRestart { background: #ff6b9d; }
+  #restartBtn, #overlayRestart, #winRestart { background: #ff6b9d; }
+  #winContinue { background: #6bd67a; }
   #musicBtn { background: #6bd67a; }
   #pauseBtn { background: #ff9f43; }
   button:active { transform: translateY(2px); box-shadow: 0 1px 0 rgba(0,0,0,.15); }
@@ -208,6 +209,24 @@
     max-width: 90vw;
   }
   .overlay-card h2 { color: #ff6b9d; margin-top: 0; }
+  .fireworks {
+    height: 92px;
+    position: relative;
+    overflow: hidden;
+    margin: 6px 0 12px;
+  }
+  .fireworks span {
+    position: absolute;
+    left: var(--x);
+    top: var(--y);
+    font-size: 1.8rem;
+    animation: burst .9s ease-in-out infinite;
+    animation-delay: var(--d);
+  }
+  @keyframes burst {
+    0%, 100% { transform: scale(.65); opacity: .55; }
+    50% { transform: scale(1.35); opacity: 1; }
+  }
   .modal-close {
     display: none;
     position: absolute;
@@ -359,11 +378,30 @@
     </div>
   </div>
 
+  <div id="winOverlay" class="modal-overlay">
+    <div class="overlay-card">
+      <h2>破關成功！</h2>
+      <div class="fireworks" aria-hidden="true">
+        <span style="--x:8%; --y:34%; --d:0s;">🎆</span>
+        <span style="--x:26%; --y:6%; --d:.18s;">✨</span>
+        <span style="--x:44%; --y:42%; --d:.08s;">🎇</span>
+        <span style="--x:62%; --y:12%; --d:.28s;">✨</span>
+        <span style="--x:80%; --y:36%; --d:.14s;">🎆</span>
+      </div>
+      <p id="winScore"></p>
+      <div class="setup-actions">
+        <button id="winContinue" type="button">繼續玩</button>
+        <button id="winRestart" type="button">重新開始</button>
+      </div>
+    </div>
+  </div>
+
 <script>
 const ROWS = 10;
 const MIN_COLS = 4, MAX_COLS = 8;
 let COLS = MAX_COLS;
 const HIGH_KEY = "times99_highscore";
+const WIN_SCORE = 1000;
 let selectedTables = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
 const boardEl = document.getElementById("board");
@@ -371,6 +409,8 @@ const scoreEl = document.getElementById("score");
 const highEl = document.getElementById("highscore");
 const overlayEl = document.getElementById("overlay");
 const finalScoreEl = document.getElementById("finalScore");
+const winOverlayEl = document.getElementById("winOverlay");
+const winScoreEl = document.getElementById("winScore");
 
 const START_DROP_INTERVAL = 800;
 const MIN_DROP_INTERVAL = 350;
@@ -385,6 +425,7 @@ let dropTimer = null;
 let gameOver = false;
 let paused = false;
 let gameStarted = false;
+let winReached = false;
 let resumeAfterSettings = false;
 let cellEls = [];
 let clearedCount = 0;
@@ -543,6 +584,9 @@ function resolveMatches(done) {
     updateDifficulty();
     collapseGravity();
     render();
+    if (score >= WIN_SCORE && !winReached) {
+      showWin();
+    }
     setTimeout(() => resolveMatches(done), 150);
   };
   setTimeout(finishClear, 260);
@@ -671,6 +715,16 @@ function endGame() {
   overlayEl.classList.add("show");
 }
 
+function showWin() {
+  winReached = true;
+  paused = true;
+  clearInterval(dropTimer);
+  pauseBtn.textContent = "▶ 繼續";
+  pauseOverlayEl.classList.remove("show");
+  winScoreEl.textContent = `目前分數：${score}`;
+  winOverlayEl.classList.add("show");
+}
+
 function startGame() {
   gameStarted = true;
   COLS = colsForDistinctCount(distinctProductCount());
@@ -681,10 +735,12 @@ function startGame() {
   dropInterval = START_DROP_INTERVAL;
   gameOver = false;
   paused = false;
+  winReached = false;
   pauseBtn.textContent = "⏸ 暫停";
   pauseOverlayEl.classList.remove("show");
   scoreEl.textContent = "0";
   overlayEl.classList.remove("show");
+  winOverlayEl.classList.remove("show");
   buildBoardDom();
   spawnPiece();
   render();
@@ -733,6 +789,14 @@ document.getElementById("rightBtn").onclick = () => moveFalling(1);
 document.getElementById("downBtn").onclick = hardDrop;
 document.getElementById("restartBtn").onclick = startGame;
 document.getElementById("overlayRestart").onclick = startGame;
+document.getElementById("winRestart").onclick = startGame;
+document.getElementById("winContinue").onclick = () => {
+  winOverlayEl.classList.remove("show");
+  paused = false;
+  pauseBtn.textContent = "⏸ 暫停";
+  clearInterval(dropTimer);
+  if (!gameOver) dropTimer = setInterval(tick, dropInterval);
+};
 
 let swipeStart = null;
 boardEl.addEventListener("pointerdown", (e) => {
