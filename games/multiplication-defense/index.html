@@ -1,0 +1,804 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>九九乘法保衛戰</title>
+<style>
+  * { box-sizing: border-box; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: linear-gradient(160deg, #fff3d6 0%, #e3f6ff 45%, #ffe1ef 100%);
+    color: #33324a;
+    font-family: -apple-system, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    overflow-x: hidden;
+  }
+  .game-wrap {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 16px;
+  }
+  h1 { margin: 4px 0; font-size: 1.5rem; color: #ff6b9d; text-shadow: 0 2px 0 #fff; }
+  .hud {
+    display: flex;
+    gap: 18px;
+    font-size: 1rem;
+    background: rgba(255,255,255,.7);
+    padding: 6px 18px;
+    border-radius: 999px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.08);
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .hud b { color: #ff9f43; }
+  #hull { letter-spacing: 2px; }
+
+  .stage {
+    width: min(92vw, 460px);
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .sky {
+    position: relative;
+    height: 190px;
+    background: linear-gradient(180deg, #d7f0ff 0%, #f0faff 100%);
+    border: 4px solid #4fc3f7;
+    border-bottom: none;
+    border-radius: 16px 16px 0 0;
+    overflow: hidden;
+  }
+  .falling-num {
+    position: absolute;
+    top: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 2.2rem;
+    font-weight: 800;
+    color: #ff6b9d;
+    text-shadow: 0 2px 0 #fff;
+  }
+  .falling-num.pop-correct { animation: popCorrect .35s ease forwards; }
+  .falling-num.pop-wrong { animation: popWrong .35s ease forwards; }
+  @keyframes popCorrect {
+    0% { transform: translateX(-50%) scale(1); opacity: 1; }
+    100% { transform: translateX(-50%) scale(1.6); opacity: 0; }
+  }
+  @keyframes popWrong {
+    0% { transform: translateX(-50%) scale(1); opacity: 1; }
+    100% { transform: translateX(-50%) scale(.6); opacity: 0; }
+  }
+  .timebar-wrap {
+    position: absolute;
+    left: 6px; right: 6px; bottom: 6px;
+    height: 6px;
+    background: rgba(255,255,255,.6);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  #timebar {
+    height: 100%;
+    width: 100%;
+    background: #6bd67a;
+    border-radius: 999px;
+  }
+  #timebar.linear { transition: width linear; }
+  #timebar.warn { background: #ff9f43; }
+  #timebar.danger { background: #ff5d5d; }
+
+  .ship-wrap {
+    position: relative;
+    padding-top: 42px;
+    animation: bob 3.2s ease-in-out infinite;
+  }
+  .ship-wrap.sinking {
+    animation: sinkAway 1.2s ease-in forwards;
+  }
+  @keyframes bob {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(4px); }
+  }
+  @keyframes sinkAway {
+    0% { transform: translateY(0) rotate(0deg); opacity: 1; }
+    55% { transform: translateY(24px) rotate(4deg); opacity: 1; }
+    100% { transform: translateY(90px) rotate(9deg); opacity: 0; }
+  }
+  .mast {
+    position: absolute;
+    top: 6px;
+    left: 14%;
+    width: 4px;
+    height: 40px;
+    background: #6d4c33;
+    border-radius: 2px;
+    z-index: 2;
+  }
+  .mast .flag {
+    position: absolute;
+    top: -6px;
+    left: 3px;
+    font-size: 1.4rem;
+    display: inline-block;
+    transform-origin: left bottom;
+    animation: wave 2s ease-in-out infinite;
+  }
+  @keyframes wave {
+    0%, 100% { transform: rotate(0deg); }
+    50% { transform: rotate(-14deg); }
+  }
+  .ship-row {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 4px;
+    background:
+      repeating-linear-gradient(180deg, rgba(0,0,0,.08) 0, rgba(0,0,0,.08) 2px, transparent 2px, transparent 18px),
+      linear-gradient(180deg, #c39a6e 0%, #9c714a 55%, #7a5232 100%);
+    box-shadow: inset 0 4px 0 rgba(255,255,255,.25), inset 0 -8px 16px rgba(0,0,0,.35);
+    border: 4px solid #8a5f3a;
+    border-top: none;
+    padding: 30px 8px 70px;
+    clip-path: polygon(
+      0% 0%, 100% 0%,
+      100% 65%, 97% 75%, 90% 86%, 78% 95%, 62% 99%, 50% 100%, 38% 99%, 22% 95%, 10% 86%, 3% 75%, 0% 65%
+    );
+  }
+  .porthole {
+    position: absolute;
+    top: 6px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #eaf6ff 0%, #9fd3f0 60%, #4a90b8 100%);
+    border: 3px solid #5b3d24;
+    box-shadow: inset 0 0 3px rgba(0,0,0,.5), 0 1px 2px rgba(0,0,0,.3);
+    z-index: 0;
+    pointer-events: none;
+  }
+  .flood {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 0%;
+    background: rgba(79,195,247,.55);
+    transition: height .3s ease;
+    pointer-events: none;
+    z-index: 0;
+  }
+  .lane {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+  .bomb-slot {
+    height: 42px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.6rem;
+  }
+  .bomb-icon {
+    display: inline-block;
+    animation: dropIn .35s ease forwards;
+  }
+  @keyframes dropIn {
+    0% { transform: translate(var(--bx,0px), -50px) rotate(var(--br,0deg)); opacity: 0; }
+    70% { transform: translate(var(--bx,0px), calc(var(--by,0px) + 4px)) rotate(var(--br,0deg)); opacity: 1; }
+    100% { transform: translate(var(--bx,0px), var(--by,0px)) rotate(var(--br,0deg)); opacity: 1; }
+  }
+  .bomb-icon.boom { animation: boom .4s ease forwards; }
+  @keyframes boom {
+    0% { transform: translate(var(--bx,0px), var(--by,0px)) rotate(var(--br,0deg)) scale(1); opacity: 1; }
+    60% { transform: translate(var(--bx,0px), var(--by,0px)) rotate(var(--br,0deg)) scale(1.8); opacity: 1; }
+    100% { transform: translate(var(--bx,0px), var(--by,0px)) rotate(var(--br,0deg)) scale(2.2); opacity: 0; }
+  }
+  .hole-mark {
+    position: relative;
+    width: 28px;
+    height: 24px;
+    transform: scale(0) rotate(var(--hr, 0deg));
+    transition: transform .2s ease;
+  }
+  .hole-mark.holed { transform: scale(1) rotate(var(--hr, 0deg)); }
+  .hole-mark.holed::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    clip-path: polygon(30% 0%, 55% 14%, 80% 3%, 100% 30%, 87% 52%, 100% 78%, 68% 100%, 44% 85%, 17% 100%, 0% 68%, 13% 40%, 0% 15%);
+    background: radial-gradient(ellipse at 50% 40%, #140d09 0%, #3a2718 65%, #5b3d24 100%);
+    box-shadow: inset 0 2px 5px rgba(0,0,0,.85);
+  }
+  .hole-mark.holed::after {
+    content: "";
+    position: absolute;
+    inset: -3px;
+    clip-path: polygon(30% 0%, 55% 14%, 80% 3%, 100% 30%, 87% 52%, 100% 78%, 68% 100%, 44% 85%, 17% 100%, 0% 68%, 13% 40%, 0% 15%);
+    border: 2px solid #e4c396;
+    opacity: .7;
+    pointer-events: none;
+  }
+
+  .choices {
+    position: relative;
+    z-index: 2;
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 6px;
+    background: #fff8ea;
+    border: 4px solid #ffd166;
+    border-top: none;
+    border-radius: 0 0 16px 16px;
+    padding: 10px 6px;
+  }
+  .choice-btn {
+    background: #4fc3f7;
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    padding: 10px 2px;
+    font-size: .95rem;
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: 0 3px 0 rgba(0,0,0,.15);
+  }
+  .choice-btn:active { transform: translateY(2px); box-shadow: 0 1px 0 rgba(0,0,0,.15); }
+  .choice-btn:disabled { opacity: .5; cursor: default; }
+
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; margin-top: 4px; }
+  button {
+    background: #4fc3f7;
+    color: #fff;
+    border: none;
+    border-radius: 999px;
+    padding: 10px 18px;
+    font-size: 1rem;
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: 0 3px 0 rgba(0,0,0,.15);
+  }
+  #restartBtn { background: #ff6b9d; }
+  #settingsBtn { background: #a78bfa; }
+  #overlayRestart, #winRestart { background: #ff6b9d; }
+  #winContinue { background: #6bd67a; }
+  button:active { transform: translateY(2px); box-shadow: 0 1px 0 rgba(0,0,0,.15); }
+
+  .hint { opacity: .65; font-size: .85rem; text-align: center; max-width: 460px; }
+
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(51,50,74,.75);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 12px;
+    text-align: center;
+    color: #fff;
+    z-index: 2;
+  }
+  .modal-overlay.show { display: flex; }
+  .overlay-card {
+    position: relative;
+    background: #fff8ea;
+    color: #33324a;
+    padding: 28px 36px;
+    border-radius: 20px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.3);
+    max-width: 90vw;
+  }
+  .overlay-card h2 { color: #ff6b9d; margin-top: 0; }
+  .modal-close {
+    display: none;
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border-radius: 50%;
+    background: #ff9f9f;
+    box-shadow: none;
+    font-size: 1rem;
+    line-height: 1;
+  }
+  .table-picker {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+    max-width: 320px;
+    margin: 14px auto;
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: #e3f6ff;
+    border: 2px solid #4fc3f7;
+    color: #33324a;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .chip input { display: none; }
+  .chip:has(input:checked) { background: #4fc3f7; color: #fff; }
+  .setup-actions { display: flex; gap: 8px; justify-content: center; }
+  .fireworks {
+    height: 92px;
+    position: relative;
+    overflow: hidden;
+    margin: 6px 0 12px;
+  }
+  .fireworks span {
+    position: absolute;
+    left: var(--x);
+    top: var(--y);
+    font-size: 1.8rem;
+    animation: burst .9s ease-in-out infinite;
+    animation-delay: var(--d);
+  }
+  @keyframes burst {
+    0%, 100% { transform: scale(.65); opacity: .55; }
+    50% { transform: scale(1.35); opacity: 1; }
+  }
+  @media (max-width: 700px) {
+    .game-wrap { gap: 8px; padding: 8px; }
+    h1 { font-size: 1.15rem; margin: 0; }
+    .hud { gap: 8px; padding: 5px 10px; font-size: .78rem; }
+    .falling-num { font-size: 1.8rem; }
+    .choice-btn { font-size: .8rem; padding: 8px 2px; }
+    .hint { display: none; }
+    .overlay-card { padding: 20px 16px; border-radius: 14px; }
+  }
+</style>
+</head>
+<body>
+  <div class="game-wrap">
+    <h1>🚢 九九乘法保衛戰</h1>
+    <div class="hud">
+      <div>分數: <b id="score">0</b></div>
+      <div>最高分: <b id="highscore">0</b></div>
+      <div>船身: <b id="hull">❤️❤️❤️❤️❤️</b></div>
+    </div>
+
+    <div class="stage">
+      <div class="sky" id="sky">
+        <div class="timebar-wrap"><div id="timebar"></div></div>
+      </div>
+      <div class="ship-wrap" id="shipWrap">
+        <div class="mast" aria-hidden="true"><span class="flag">🚩</span></div>
+        <div class="ship-row" id="shipRow">
+          <div class="flood" id="flood"></div>
+          <div class="porthole" aria-hidden="true" style="left:16%;"></div>
+          <div class="porthole" aria-hidden="true" style="left:48%;"></div>
+          <div class="porthole" aria-hidden="true" style="left:80%;"></div>
+          <div class="lane"><div class="bomb-slot" data-slot="0"></div><div class="hole-mark" data-hole="0"></div></div>
+          <div class="lane"><div class="bomb-slot" data-slot="1"></div><div class="hole-mark" data-hole="1"></div></div>
+          <div class="lane"><div class="bomb-slot" data-slot="2"></div><div class="hole-mark" data-hole="2"></div></div>
+          <div class="lane"><div class="bomb-slot" data-slot="3"></div><div class="hole-mark" data-hole="3"></div></div>
+          <div class="lane"><div class="bomb-slot" data-slot="4"></div><div class="hole-mark" data-hole="4"></div></div>
+        </div>
+      </div>
+      <div class="choices" id="choices">
+        <button class="choice-btn" data-idx="0">--</button>
+        <button class="choice-btn" data-idx="1">--</button>
+        <button class="choice-btn" data-idx="2">--</button>
+        <button class="choice-btn" data-idx="3">--</button>
+        <button class="choice-btn" data-idx="4">--</button>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button id="restartBtn">重新開始</button>
+      <button id="settingsBtn">⚙️ 設定</button>
+    </div>
+    <div class="hint">天空掉下目標數字，15 秒內在下方選出「幾×幾」等於它。答錯或超時，數字會變成炸彈砸在船上，兩顆炸彈疊在同一格就會爆炸炸出一個洞，船身被炸 5 次就沉船！</div>
+  </div>
+
+  <div id="setupOverlay" class="modal-overlay show">
+    <div class="overlay-card">
+      <button id="setupCloseBtn" class="modal-close" type="button">✕</button>
+      <h2>選擇要練習的乘法表</h2>
+      <div class="table-picker">
+        <label class="chip"><input type="checkbox" value="1">1</label>
+        <label class="chip"><input type="checkbox" value="2">2</label>
+        <label class="chip"><input type="checkbox" value="3">3</label>
+        <label class="chip"><input type="checkbox" value="4">4</label>
+        <label class="chip"><input type="checkbox" value="5">5</label>
+        <label class="chip"><input type="checkbox" value="6">6</label>
+        <label class="chip"><input type="checkbox" value="7">7</label>
+        <label class="chip"><input type="checkbox" value="8">8</label>
+        <label class="chip"><input type="checkbox" value="9">9</label>
+      </div>
+      <div class="setup-actions">
+        <button id="selectAllBtn" type="button">全選</button>
+        <button id="selectNoneBtn" type="button">全不選</button>
+      </div>
+      <button id="startGameBtn" style="margin-top:16px;">開始遊戲 ▶</button>
+    </div>
+  </div>
+
+  <div id="overlay" class="modal-overlay">
+    <div class="overlay-card">
+      <h2>船沉沒了 🌊</h2>
+      <p id="finalScore"></p>
+      <button id="overlayRestart">再玩一次</button>
+    </div>
+  </div>
+
+  <div id="winOverlay" class="modal-overlay">
+    <div class="overlay-card">
+      <h2>破關成功！</h2>
+      <div class="fireworks" aria-hidden="true">
+        <span style="--x:8%; --y:34%; --d:0s;">🎆</span>
+        <span style="--x:26%; --y:6%; --d:.18s;">✨</span>
+        <span style="--x:44%; --y:42%; --d:.08s;">🎇</span>
+        <span style="--x:62%; --y:12%; --d:.28s;">✨</span>
+        <span style="--x:80%; --y:36%; --d:.14s;">🎆</span>
+      </div>
+      <p id="winScore"></p>
+      <div class="setup-actions">
+        <button id="winContinue" type="button">繼續玩</button>
+        <button id="winRestart" type="button">重新開始</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+const ROUND_TIME = 15000;
+const WIN_SCORE = 1000;
+const CORRECT_SCORE = 20;
+const MAX_DAMAGE = 5;
+const HIGH_KEY = "times99defense_highscore";
+
+let selectedTables = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+const scoreEl = document.getElementById("score");
+const highEl = document.getElementById("highscore");
+const hullEl = document.getElementById("hull");
+const skyEl = document.getElementById("sky");
+const timebarEl = document.getElementById("timebar");
+const floodEl = document.getElementById("flood");
+const choicesEl = document.getElementById("choices");
+const choiceBtns = [...choicesEl.querySelectorAll(".choice-btn")];
+const bombSlotEls = [...document.querySelectorAll(".bomb-slot")];
+const holeEls = [...document.querySelectorAll(".hole-mark")];
+const shipWrapEl = document.getElementById("shipWrap");
+const overlayEl = document.getElementById("overlay");
+const finalScoreEl = document.getElementById("finalScore");
+const winOverlayEl = document.getElementById("winOverlay");
+const winScoreEl = document.getElementById("winScore");
+const setupOverlay = document.getElementById("setupOverlay");
+const setupCloseBtn = document.getElementById("setupCloseBtn");
+const tableCheckboxes = [...document.querySelectorAll(".table-picker input[type=checkbox]")];
+
+let score = 0;
+let highScore = Number(localStorage.getItem(HIGH_KEY)) || 0;
+let damageCount = 0;
+let restingBomb = [false, false, false, false, false];
+let holedLane = [false, false, false, false, false];
+let choices = [];
+let correctIdx = -1;
+let target = 0;
+let roundActive = false;
+let roundToken = 0;
+let roundTimeout = null;
+let gameOver = false;
+let winReached = false;
+let gameStarted = false;
+let fallingNumEl = null;
+let resumeAfterSettings = false;
+
+highEl.textContent = highScore;
+
+function randInt(n) { return Math.floor(Math.random() * n); }
+
+function pickOperands() {
+  const tables = [...selectedTables];
+  const tableNum = tables[randInt(tables.length)];
+  const other = 1 + randInt(9);
+  return Math.random() < 0.5 ? [tableNum, other] : [other, tableNum];
+}
+
+function buildChoices(x, y, correctIndex) {
+  const t = x * y;
+  const used = new Set([x + "x" + y]);
+  const result = new Array(5);
+  result[correctIndex] = { x, y };
+  for (let i = 0; i < 5; i++) {
+    if (i === correctIndex) continue;
+    let a, b, label, tries = 0;
+    do {
+      a = 1 + randInt(9);
+      b = 1 + randInt(9);
+      label = a + "x" + b;
+      tries++;
+    } while ((a * b === t || used.has(label)) && tries < 200);
+    used.add(label);
+    result[i] = { x: a, y: b };
+  }
+  return result;
+}
+
+function updateScoreUI() {
+  scoreEl.textContent = score;
+  if (score > highScore) {
+    highScore = score;
+    highEl.textContent = highScore;
+    localStorage.setItem(HIGH_KEY, String(highScore));
+  }
+}
+
+function updateHullUI() {
+  hullEl.textContent = "❤️".repeat(MAX_DAMAGE - damageCount) + "🖤".repeat(damageCount);
+  floodEl.style.height = (damageCount / MAX_DAMAGE * 100) + "%";
+}
+
+function clearFallingNum() {
+  if (fallingNumEl) { fallingNumEl.remove(); fallingNumEl = null; }
+}
+
+function spawnFallingNum() {
+  clearFallingNum();
+  fallingNumEl = document.createElement("div");
+  fallingNumEl.className = "falling-num";
+  fallingNumEl.textContent = target;
+  skyEl.appendChild(fallingNumEl);
+  const skyHeight = skyEl.clientHeight - 40;
+  fallingNumEl.style.transition = "none";
+  fallingNumEl.style.top = "0px";
+  requestAnimationFrame(() => {
+    fallingNumEl.style.transition = `top ${ROUND_TIME}ms linear`;
+    fallingNumEl.style.top = skyHeight + "px";
+  });
+}
+
+function startTimebar() {
+  timebarEl.className = "";
+  timebarEl.style.transition = "none";
+  timebarEl.style.width = "100%";
+  void timebarEl.offsetWidth;
+  timebarEl.className = "linear";
+  timebarEl.style.transitionDuration = ROUND_TIME + "ms";
+  timebarEl.style.width = "0%";
+  clearTimeout(startTimebar._t1);
+  clearTimeout(startTimebar._t2);
+  startTimebar._t1 = setTimeout(() => timebarEl.classList.add("warn"), ROUND_TIME * 0.5);
+  startTimebar._t2 = setTimeout(() => timebarEl.classList.add("danger"), ROUND_TIME * 0.8);
+}
+
+function renderChoices() {
+  choiceBtns.forEach((btn, i) => {
+    btn.textContent = `${choices[i].x}×${choices[i].y}`;
+    btn.disabled = false;
+  });
+}
+
+function pickOpenLane() {
+  const openLanes = [0, 1, 2, 3, 4].filter(i => !holedLane[i]);
+  return openLanes[randInt(openLanes.length)];
+}
+
+function nextRound() {
+  if (gameOver) return;
+  const [x, y] = pickOperands();
+  target = x * y;
+  correctIdx = randInt(5);
+  choices = buildChoices(x, y, correctIdx);
+  renderChoices();
+  spawnFallingNum();
+  startTimebar();
+  roundActive = true;
+  const token = ++roundToken;
+  clearTimeout(roundTimeout);
+  roundTimeout = setTimeout(() => handleTimeout(token), ROUND_TIME);
+}
+
+function scheduleNext() {
+  setTimeout(() => { if (!gameOver) nextRound(); }, 450);
+}
+
+function handleTimeout(token) {
+  if (token !== roundToken || !roundActive || gameOver) return;
+  resolveRound(false);
+}
+
+function onChoiceClick(idx) {
+  if (!roundActive || gameOver) return;
+  ensureAudio();
+  resolveRound(idx === correctIdx);
+}
+
+function resolveRound(correct) {
+  roundActive = false;
+  clearTimeout(roundTimeout);
+  choiceBtns.forEach(btn => btn.disabled = true);
+  if (fallingNumEl) {
+    fallingNumEl.style.transition = "none";
+    fallingNumEl.classList.add(correct ? "pop-correct" : "pop-wrong");
+    const el = fallingNumEl;
+    fallingNumEl = null;
+    setTimeout(() => el.remove(), 350);
+  }
+
+  if (correct) {
+    score += CORRECT_SCORE;
+    updateScoreUI();
+    if (score >= WIN_SCORE && !winReached) {
+      winReached = true;
+      showWin();
+      return;
+    }
+    scheduleNext();
+  } else {
+    spawnBomb(pickOpenLane());
+  }
+}
+
+function spawnBomb(laneIdx) {
+  const slot = bombSlotEls[laneIdx];
+  const hole = holeEls[laneIdx];
+  const bomb = document.createElement("span");
+  bomb.className = "bomb-icon";
+  bomb.textContent = "💣";
+  bomb.style.setProperty("--bx", (Math.random() * 16 - 8).toFixed(1) + "px");
+  bomb.style.setProperty("--by", (Math.random() * 10 - 5).toFixed(1) + "px");
+  bomb.style.setProperty("--br", (Math.random() * 40 - 20).toFixed(1) + "deg");
+  slot.innerHTML = "";
+  slot.appendChild(bomb);
+
+  setTimeout(() => {
+    if (restingBomb[laneIdx]) {
+      bomb.textContent = "💥";
+      bomb.classList.add("boom");
+      hole.style.setProperty("--hr", (Math.random() * 44 - 22).toFixed(1) + "deg");
+      hole.classList.add("holed");
+      restingBomb[laneIdx] = false;
+      holedLane[laneIdx] = true;
+      damageCount++;
+      updateHullUI();
+      setTimeout(() => { slot.innerHTML = ""; }, 400);
+      if (damageCount >= MAX_DAMAGE) {
+        endGame();
+        return;
+      }
+    } else {
+      restingBomb[laneIdx] = true;
+    }
+    scheduleNext();
+  }, 380);
+}
+
+function endGame() {
+  gameOver = true;
+  gameStarted = false;
+  roundActive = false;
+  clearTimeout(roundTimeout);
+  playFailSound();
+  shipWrapEl.classList.add("sinking");
+  setTimeout(() => {
+    finalScoreEl.textContent = `本次分數：${score}　最高分：${highScore}`;
+    overlayEl.classList.add("show");
+  }, 1200);
+}
+
+function showWin() {
+  playFanfare();
+  winScoreEl.textContent = `目前分數：${score}`;
+  winOverlayEl.classList.add("show");
+}
+
+function startGame() {
+  gameStarted = true;
+  gameOver = false;
+  winReached = false;
+  score = 0;
+  damageCount = 0;
+  restingBomb = [false, false, false, false, false];
+  holedLane = [false, false, false, false, false];
+  shipWrapEl.classList.remove("sinking");
+  holeEls.forEach(h => h.classList.remove("holed"));
+  bombSlotEls.forEach(s => s.innerHTML = "");
+  clearFallingNum();
+  updateScoreUI();
+  updateHullUI();
+  overlayEl.classList.remove("show");
+  winOverlayEl.classList.remove("show");
+  roundToken++;
+  clearTimeout(roundTimeout);
+  nextRound();
+}
+
+choicesEl.addEventListener("click", (e) => {
+  const btn = e.target.closest(".choice-btn");
+  if (!btn || btn.disabled) return;
+  onChoiceClick(Number(btn.dataset.idx));
+});
+
+document.getElementById("restartBtn").onclick = startGame;
+document.getElementById("overlayRestart").onclick = startGame;
+document.getElementById("winRestart").onclick = startGame;
+document.getElementById("winContinue").onclick = () => {
+  winOverlayEl.classList.remove("show");
+  scheduleNext();
+};
+
+document.getElementById("selectAllBtn").onclick = () => tableCheckboxes.forEach(cb => cb.checked = true);
+document.getElementById("selectNoneBtn").onclick = () => tableCheckboxes.forEach(cb => cb.checked = false);
+
+document.getElementById("settingsBtn").onclick = () => {
+  resumeAfterSettings = gameStarted && !gameOver;
+  gameOver = true; // pause round progression while settings open
+  clearTimeout(roundTimeout);
+  roundActive = false;
+  setupCloseBtn.style.display = gameStarted ? "flex" : "none";
+  setupOverlay.classList.add("show");
+};
+
+setupCloseBtn.onclick = () => {
+  setupOverlay.classList.remove("show");
+  if (resumeAfterSettings) {
+    gameOver = false;
+    nextRound();
+  }
+};
+
+document.getElementById("startGameBtn").onclick = () => {
+  const chosen = tableCheckboxes.filter(cb => cb.checked).map(cb => Number(cb.value));
+  selectedTables = new Set(chosen.length ? chosen : [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  tableCheckboxes.forEach(cb => cb.checked = selectedTables.has(Number(cb.value)));
+  setupOverlay.classList.remove("show");
+  startGame();
+};
+
+// Tiny synthesized fanfare for the win screen, no audio files needed.
+let audioCtx = null;
+function ensureAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === "suspended") audioCtx.resume();
+}
+function playNote(freq, dur, delay, type, bend) {
+  setTimeout(() => {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type || "triangle";
+    const now = audioCtx.currentTime;
+    osc.frequency.setValueAtTime(freq, now);
+    if (bend) osc.frequency.exponentialRampToValueAtTime(freq * 0.82, now + dur);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.18, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(now);
+    osc.stop(now + dur + 0.02);
+  }, delay);
+}
+function playFanfare() {
+  ensureAudio();
+  const notes = [[523.25, .18], [659.25, .18], [783.99, .18], [1046.5, .4]];
+  let t = 0;
+  notes.forEach(([freq, dur]) => { playNote(freq, dur, t); t += dur * 1000; });
+}
+// Sad-trombone style descending wail for the sinking ship.
+function playFailSound() {
+  ensureAudio();
+  const notes = [[392.00, .32], [349.23, .32], [311.13, .32], [261.63, .7]];
+  let t = 0;
+  notes.forEach(([freq, dur]) => { playNote(freq, dur, t, "sawtooth", true); t += dur * 1000; });
+}
+</script>
+</body>
+</html>
