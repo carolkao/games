@@ -5,6 +5,8 @@
 ## 目前的遊戲
 
 - [`games/multiplication-tetris/`](games/multiplication-tetris/) — 九九乘法消消樂
+- [`games/multiplication-find/`](games/multiplication-find/) — 九九乘法找找看
+- [`games/multiplication-defense/`](games/multiplication-defense/) — 九九乘法保衛戰
 - [`games/forest-cabin/`](games/forest-cabin/) — 森林小屋
 
 ## 新增一個遊戲
