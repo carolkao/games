@@ -101,11 +101,13 @@
       title: "森林小屋",
       description: "採集資源、經營小屋",
       path: "games/forest-cabin/",
+      hidden: true,
     },
   ];
 
   const grid = document.getElementById("grid");
-  GAMES.forEach(game => {
+  const showHiddenGames = new URLSearchParams(location.search).has("forest-cabin");
+  GAMES.filter(game => !game.hidden || showHiddenGames).forEach(game => {
     const a = document.createElement("a");
     a.className = "card";
     a.href = game.path;
