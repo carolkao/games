@@ -47,7 +47,7 @@ canvas { border-radius:16px; box-shadow:0 8px 28px rgba(0,60,40,.25),0 0 0 3px r
 // ─── CANVAS / SCALE ───────────────────────────
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
-const isMobile = navigator.maxTouchPoints>0;
+const isMobile = matchMedia("(max-width: 700px), (pointer: coarse)").matches;
 if(isMobile) document.getElementById('hint').style.display='none';
 
 // ─── ISOMETRIC GRID ───────────────────────────
@@ -159,7 +159,9 @@ for(let r=0;r<WROWS;r++)for(let c=0;c<WCOLS;c++) if(isFenceRing(c,r)) fenceTiles
 
 // Continuous distance check (not tile-rounding) so the player can never end up
 // standing exactly on a rounding boundary and get stuck unable to leave.
-const FENCE_BLOCK_R=0.4;
+// Must be > 0.5 (half the 1.0 tile spacing) or adjacent posts' circles leave a
+// gap at the seam between them that a diagonal approach can slip through.
+const FENCE_BLOCK_R=0.58;
 function nearFence(col,row){
   for(const f of fenceTiles) if(Math.hypot(col-f.c,row-f.r)<FENCE_BLOCK_R) return true;
   return false;
