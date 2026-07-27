@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>🏘️ 立體小鎮 🏘️</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; touch-action:none; }
+body {
+  background: linear-gradient(180deg, #bfe8ff 0%, #eaf7e0 55%, #d9f2c4 100%);
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  min-height:100vh; overflow:hidden; user-select:none;
+  font-family: -apple-system, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+}
+canvas { border-radius:16px; box-shadow:0 8px 28px rgba(0,60,40,.25),0 0 0 3px rgba(255,255,255,.5); display:block; }
+#hint { color:rgba(30,60,30,0.55); font-size:11px; margin-top:8px; letter-spacing:.5px; }
+@media (max-width: 700px) {
+  body { min-height: 100svh; }
+  canvas { border-radius: 0; box-shadow: none; }
+}
+.home-link {
+  position: fixed; top: 10px; left: 10px; z-index: 20;
+  width: 40px; height: 40px; border-radius: 50%;
+  background: rgba(255,255,255,.85);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.3rem; text-decoration: none;
+  box-shadow: 0 3px 8px rgba(0,0,0,.15);
+}
+.home-link:active { transform: scale(.92); }
+.hud {
+  position: fixed; top: 10px; right: 10px; z-index: 20;
+  display:flex; gap:10px;
+  background: rgba(255,255,255,.85);
+  padding: 7px 14px; border-radius: 999px;
+  box-shadow: 0 3px 8px rgba(0,0,0,.15);
+  font-size: .95rem; font-weight:600; color:#2d5a2d;
+}
+.hud span{ white-space:nowrap; }
+</style>
+</head>
+<body>
+<a href="../../index.html" target="_top" class="home-link" aria-label="返回主選單" title="返回主選單">🏠</a>
+<div class="hud" id="hud"></div>
+<canvas id="c"></canvas>
+<div id="hint">WASD/方向鍵 移動 ‧ 靠近鬱金香/樹木/岩石自動採集 ‧ 走到小屋旁自動賣出</div>
+<script>
+// ─── CANVAS / SCALE ───────────────────────────
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const isMobile = navigator.maxTouchPoints>0;
+if(isMobile) document.getElementById('hint').style.display='none';
+
+// ─── ISOMETRIC GRID ───────────────────────────
+const A=32, B=16; // tile half-width / half-height
+const WCOLS=15, WROWS=15;
+const FARM_X0=4, FARM_W=7, FARM_Y0=3, FARM_H=9;
+const FARM_X1=FARM_X0+FARM_W-1, FARM_Y1=FARM_Y0+FARM_H-1;
+const PATH_COL=FARM_X0+3;
+const HOUSE_C=1, HOUSE_R=1;
+
+function isFarm(c,r){ return c>=FARM_X0&&c<=FARM_X1&&r>=FARM_Y0&&r<=FARM_Y1; }
+function isPath(c,r){ return isFarm(c,r)&&c===PATH_COL; }
+function isEntrance(c,r){ return r===FARM_Y1+1&&(c===FARM_X1-1||c===FARM_X1); }
+function isFenceRing(c,r){
+  if(isEntrance(c,r)) return false;
+  if(r===FARM_Y0-1&&c>=FARM_X0-1&&c<=FARM_X1+1) return true;
+  if(r===FARM_Y1+1&&c>=FARM_X0-1&&c<=FARM_X1+1) return true;
+  if(c===FARM_X0-1&&r>=FARM_Y0-1&&r<=FARM_Y1+1) return true;
+  if(c===FARM_X1+1&&r>=FARM_Y0-1&&r<=FARM_Y1+1) return true;
+  return false;
+}
+function isHouse(c,r){ return c===HOUSE_C&&r===HOUSE_R; }
+
+// bounding box + origin (computed once, content centered)
+const minSx=(0-(WROWS-1))*A, maxSx=(WCOLS-1-0)*A;
+const minSy=0, maxSy=(WCOLS-1+WROWS-1)*B;
+const TOP_PAD=76, SIDE_PAD=A+20, BOTTOM_PAD=B+24;
+let VW=maxSx-minSx+SIDE_PAD*2, VH=maxSy-minSy+TOP_PAD+BOTTOM_PAD;
+const ORIGIN_X=VW/2, ORIGIN_Y=TOP_PAD-minSy;
+function isoPos(c,r){ return { x:ORIGIN_X+(c-r)*A, y:ORIGIN_Y+(c+r)*B }; }
+
+let S=1;
+function resize(){
+  const availW=window.innerWidth-8, availH=window.innerHeight-(isMobile?8:28);
+  S=Math.min(availW/VW, availH/VH);
+  S=Math.max(0.28,Math.min(S,2));
+  canvas.width=Math.round(VW*S); canvas.height=Math.round(VH*S);
+}
+resize(); window.addEventListener('resize',resize);
+
+// ─── AUDIO ────────────────────────────────────
+let AC;
+function initAudio(){ if(!AC) AC=new(window.AudioContext||window.webkitAudioContext)(); }
+function beep(freq,type,vol,dur){
+  if(!AC)return;
+  const o=AC.createOscillator(),g=AC.createGain();
+  o.connect(g);g.connect(AC.destination);
+  o.type=type;o.frequency.value=freq;
+  g.gain.setValueAtTime(vol,AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,AC.currentTime+dur);
+  o.start();o.stop(AC.currentTime+dur);
+}
+const sfxChop  = ()=>beep(140+Math.random()*40,'sawtooth',0.12,0.07);
+const sfxMine  = ()=>beep(90+Math.random()*20,'square',0.10,0.09);
+const sfxBloom = ()=>beep(880+Math.random()*100,'sine',0.08,0.12);
+const sfxSell  = ()=>[523,659,784,1047].forEach((f,i)=>setTimeout(()=>beep(f,'sine',0.18,0.12),i*65));
+canvas.addEventListener('pointerdown',initAudio,{once:true});
+document.addEventListener('keydown',initAudio,{once:true});
+
+// ─── HELPERS ──────────────────────────────────
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+function gdist(c1,r1,c2,r2){ return Math.hypot(c1-c2,r1-r2); }
+function roundRect(x,y,w,h,rad){
+  ctx.beginPath();
+  ctx.moveTo(x+rad,y);ctx.lineTo(x+w-rad,y);ctx.quadraticCurveTo(x+w,y,x+w,y+rad);
+  ctx.lineTo(x+w,y+h-rad);ctx.quadraticCurveTo(x+w,y+h,x+w-rad,y+h);
+  ctx.lineTo(x+rad,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-rad);
+  ctx.lineTo(x,y+rad);ctx.quadraticCurveTo(x,y,x+rad,y);
+  ctx.closePath();
+}
+
+// ─── WORLD DATA ───────────────────────────────
+const WOOD_PRICE=5, STONE_PRICE=8, FLOWER_PRICE=15;
+const HARVEST_TIME=0.55, HARVEST_RANGE=0.85, SELL_RANGE=1.3;
+const TREE_REGROW=18, ROCK_REGROW=22, TULIP_REGROW=7;
+const SPEED=3.05; // tiles / second
+
+const tulips=[];
+for(let r=FARM_Y0;r<=FARM_Y1;r++)for(let c=FARM_X0;c<=FARM_X1;c++){
+  if(c===PATH_COL)continue;
+  tulips.push({c,r,timer:rnd(0,TULIP_REGROW),ready:false});
+}
+tulips.forEach(t=>{ if(t.timer>=TULIP_REGROW*0.85){t.ready=true;t.timer=TULIP_REGROW;} });
+
+const trees=[
+  {c:2,r:0},{c:4,r:0},{c:6,r:0},{c:8,r:0},{c:10,r:0},{c:12,r:0},
+  {c:0,r:4},{c:0,r:8},
+].map(p=>({...p,hp:3,maxHp:3,dead:false,regrow:0,shake:0}));
+
+const rocks=[
+  {c:13,r:2},{c:13,r:4},{c:13,r:6},{c:13,r:8},{c:13,r:10},{c:13,r:12},
+].map(p=>({...p,hp:3,maxHp:3,dead:false,regrow:0,shake:0}));
+
+const fenceTiles=[];
+for(let r=0;r<WROWS;r++)for(let c=0;c<WCOLS;c++) if(isFenceRing(c,r)) fenceTiles.push({c,r});
+
+// ─── PARTICLES ────────────────────────────────
+const parts=[];
+function spawnParticle(c,r,text,color){
+  const p=isoPos(c,r);
+  parts.push({x:p.x,y:p.y-26,text,color:color||'#fff',vy:-46,life:1.3,max:1.3});
+}
+function updateParticles(dt){
+  for(let i=parts.length-1;i>=0;i--){
+    const p=parts[i]; p.y+=p.vy*dt; p.life-=dt;
+    if(p.life<=0)parts.splice(i,1);
+  }
+}
+function drawParticles(){
+  ctx.font='bold 13px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';
+  for(const p of parts){
+    ctx.globalAlpha=clamp(p.life/p.max,0,1);
+    ctx.fillStyle=p.color;ctx.fillText(p.text,p.x,p.y);
+  }
+  ctx.globalAlpha=1;
+}
+
+// ─── PLAYER ───────────────────────────────────
+const P={
+  col:3.3, row:3.3, wood:0, stone:0, flowers:0, gold:0,
+  harvestTarget:null, harvestTimer:0, moving:false, frame:0, frameTimer:0,
+};
+
+// ─── INPUT ────────────────────────────────────
+const keys={};
+window.addEventListener('keydown',e=>{keys[e.key]=true;if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key))e.preventDefault();});
+window.addEventListener('keyup',e=>{keys[e.key]=false;});
+
+const JOY={active:false,pid:-1,bx:70,by:0,r:48,kr:21,kx:0,ky:0};
+function setJoyPos(){ JOY.by=VH-64; }
+setJoyPos();
+let tapTouch=null;
+function ptrPos(e){const r=canvas.getBoundingClientRect();return{lx:(e.clientX-r.left)/S,ly:(e.clientY-r.top)/S};}
+function inJoyZone(lx,ly){return lx<150&&ly>VH-140;}
+canvas.addEventListener('pointerdown',e=>{
+  initAudio();const{lx,ly}=ptrPos(e);
+  if(!JOY.active&&inJoyZone(lx,ly)){JOY.active=true;JOY.pid=e.pointerId;JOY.kx=clamp(lx-JOY.bx,-JOY.r,JOY.r);JOY.ky=clamp(ly-JOY.by,-JOY.r,JOY.r);canvas.setPointerCapture(e.pointerId);}
+  else if(e.pointerId!==JOY.pid){tapTouch={sx:lx,sy:ly};}
+});
+canvas.addEventListener('pointermove',e=>{
+  const{lx,ly}=ptrPos(e);
+  if(JOY.active&&e.pointerId===JOY.pid){JOY.kx=clamp(lx-JOY.bx,-JOY.r,JOY.r);JOY.ky=clamp(ly-JOY.by,-JOY.r,JOY.r);}
+  else if(e.buttons&&e.pointerId!==JOY.pid){tapTouch={sx:lx,sy:ly};}
+});
+canvas.addEventListener('pointerup',e=>{if(JOY.active&&e.pointerId===JOY.pid){JOY.active=false;JOY.pid=-1;JOY.kx=0;JOY.ky=0;}else tapTouch=null;});
+canvas.addEventListener('pointercancel',e=>{if(JOY.active&&e.pointerId===JOY.pid){JOY.active=false;JOY.pid=-1;JOY.kx=0;JOY.ky=0;}else tapTouch=null;});
+
+// screen-space direction -> grid-space direction (unit vector)
+function screenDirToGrid(dx,dy){
+  const len=Math.hypot(dx,dy);
+  if(len<1e-6) return {dc:0,dr:0};
+  dx/=len; dy/=len;
+  let dc=dx/(2*A)+dy/(2*B), dr=dy/(2*B)-dx/(2*A);
+  const glen=Math.hypot(dc,dr);
+  if(glen<1e-6) return {dc:0,dr:0};
+  return {dc:dc/glen,dr:dr/glen};
+}
+
+// ─── GAME LOOP ────────────────────────────────
+let lastT=0;
+function loop(ts){
+  requestAnimationFrame(loop);
+  const dt=Math.min((ts-lastT)/1000,0.05);
+  lastT=ts; update(dt); render();
+}
+
+// ─── UPDATE ───────────────────────────────────
+function update(dt){
+  let dx=0,dy=0;
+  if(keys['ArrowLeft']||keys['a']||keys['A'])dx-=1;
+  if(keys['ArrowRight']||keys['d']||keys['D'])dx+=1;
+  if(keys['ArrowUp']||keys['w']||keys['W'])dy-=1;
+  if(keys['ArrowDown']||keys['s']||keys['S'])dy+=1;
+  if(JOY.active){const jd=Math.hypot(JOY.kx,JOY.ky);if(jd>5){dx=JOY.kx/JOY.r;dy=JOY.ky/JOY.r;}}
+  else if(tapTouch){
+    const pp=isoPos(P.col,P.row);
+    const tdx=tapTouch.sx-pp.x, tdy=tapTouch.sy-pp.y, td=Math.hypot(tdx,tdy);
+    if(td>10){dx=tdx;dy=tdy;} else tapTouch=null;
+  }
+  const {dc,dr}=screenDirToGrid(dx,dy);
+  P.moving = dc!==0||dr!==0;
+  P.col=clamp(P.col+dc*SPEED*dt, 0.3, WCOLS-1.3);
+  P.row=clamp(P.row+dr*SPEED*dt, 0.3, WROWS-1.3);
+  if(P.moving){P.frameTimer+=dt;if(P.frameTimer>0.13){P.frame=(P.frame+1)%4;P.frameTimer=0;}}
+
+  // world regrowth
+  for(const t of trees){ if(t.dead){ t.regrow-=dt; if(t.regrow<=0){t.dead=false;t.hp=t.maxHp;} } if(t.shake>0)t.shake-=dt; }
+  for(const r of rocks){ if(r.dead){ r.regrow-=dt; if(r.regrow<=0){r.dead=false;r.hp=r.maxHp;} } if(r.shake>0)r.shake-=dt; }
+  for(const tu of tulips){ if(!tu.ready){ tu.timer+=dt; if(tu.timer>=TULIP_REGROW){tu.ready=true;tu.timer=TULIP_REGROW;} } }
+
+  // harvesting (nearest ready resource in range)
+  let nearest=null, nd=HARVEST_RANGE;
+  for(const t of trees) if(!t.dead){const d=gdist(P.col,P.row,t.c,t.r);if(d<nd){nd=d;nearest={obj:t,type:'tree'};}}
+  for(const r of rocks) if(!r.dead){const d=gdist(P.col,P.row,r.c,r.r);if(d<nd){nd=d;nearest={obj:r,type:'rock'};}}
+  for(const tu of tulips) if(tu.ready){const d=gdist(P.col,P.row,tu.c,tu.r);if(d<nd){nd=d;nearest={obj:tu,type:'tulip'};}}
+  if(nearest){
+    if(P.harvestTarget!==nearest.obj){P.harvestTarget=nearest.obj;P.harvestTimer=0;}
+    P.harvestTimer+=dt;
+    if(P.harvestTimer>=HARVEST_TIME){
+      P.harvestTimer=0;
+      const obj=nearest.obj;
+      if(nearest.type==='tree'){
+        obj.hp--;obj.shake=0.4;P.wood++;
+        spawnParticle(obj.c,obj.r,'+🪵','#CD853F');sfxChop();
+        if(obj.hp<=0){obj.dead=true;obj.regrow=TREE_REGROW;P.harvestTarget=null;}
+      }else if(nearest.type==='rock'){
+        obj.hp--;obj.shake=0.4;P.stone++;
+        spawnParticle(obj.c,obj.r,'+🪨','#bbb');sfxMine();
+        if(obj.hp<=0){obj.dead=true;obj.regrow=ROCK_REGROW;P.harvestTarget=null;}
+      }else{
+        obj.ready=false;obj.timer=0;P.flowers++;
+        spawnParticle(obj.c,obj.r,'+🌷','#FF69B4');sfxBloom();
+        P.harvestTarget=null;
+      }
+    }
+  }else{P.harvestTarget=null;P.harvestTimer=0;}
+
+  // sell at house
+  if(gdist(P.col,P.row,HOUSE_C,HOUSE_R)<SELL_RANGE && (P.wood>0||P.stone>0||P.flowers>0)){
+    const earned=P.wood*WOOD_PRICE+P.stone*STONE_PRICE+P.flowers*FLOWER_PRICE;
+    P.gold+=earned;
+    spawnParticle(HOUSE_C,HOUSE_R,`+${earned}🪙`,'#FFD700');sfxSell();
+    P.wood=0;P.stone=0;P.flowers=0;
+  }
+
+  updateParticles(dt);
+  updateHUD();
+}
+
+function updateHUD(){
+  document.getElementById('hud').innerHTML=
+    `<span>🪙 ${P.gold}</span><span>🪵 ${P.wood}</span><span>🪨 ${P.stone}</span><span>🌷 ${P.flowers}</span>`;
+}
+
+// ─── RENDER ───────────────────────────────────
+function groundColor(c,r){
+  if(isEntrance(c,r)) return (r+c)%2===0?'#a9713c':'#9c6836';
+  if(isPath(c,r)) return (c+r)%2===0?'#c9a06a':'#bd934f';
+  if(isFarm(c,r)) return (c+r)%2===0?'#8a6642':'#7d5a39';
+  return (c+r)%2===0?'#6fbf4f':'#63b247';
+}
+function drawGroundTile(c,r){
+  const p=isoPos(c,r);
+  ctx.beginPath();
+  ctx.moveTo(p.x,p.y-B);ctx.lineTo(p.x+A,p.y);ctx.lineTo(p.x,p.y+B);ctx.lineTo(p.x-A,p.y);
+  ctx.closePath();
+  ctx.fillStyle=groundColor(c,r);ctx.fill();
+  ctx.strokeStyle='rgba(0,0,0,0.08)';ctx.lineWidth=1;ctx.stroke();
+  if(isFarm(c,r)&&!isPath(c,r)){
+    ctx.fillStyle='rgba(0,0,0,0.18)';
+    ctx.beginPath();ctx.arc(p.x-8,p.y+3,1.6,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.arc(p.x+7,p.y-2,1.6,0,Math.PI*2);ctx.fill();
+  }
+}
+function drawShadow(c,r,rx,ry){
+  const p=isoPos(c,r);
+  ctx.fillStyle='rgba(0,0,0,0.25)';
+  ctx.beginPath();ctx.ellipse(p.x,p.y+4,rx,ry,0,0,Math.PI*2);ctx.fill();
+}
+function drawFencePost(f){
+  const p=isoPos(f.c,f.r);
+  drawShadow(f.c,f.r,10,3.5);
+  ctx.fillStyle='#f4f1e6';
+  roundRect(p.x-4,p.y-22,8,22,3);ctx.fill();
+  ctx.strokeStyle='#c9c2a8';ctx.lineWidth=1;roundRect(p.x-4,p.y-22,8,22,3);ctx.stroke();
+  ctx.fillStyle='#e2dcc4';roundRect(p.x-4,p.y-9,8,4,1.5);ctx.fill();
+}
+function drawTree(t){
+  const p=isoPos(t.c,t.r);
+  if(t.dead)return;
+  ctx.save();ctx.translate(p.x,p.y);
+  drawShadow(t.c,t.r,16,5);
+  if(t.shake>0)ctx.rotate(Math.sin(Date.now()/42)*t.shake*0.25);
+  ctx.font='42px serif';ctx.textAlign='center';ctx.textBaseline='alphabetic';ctx.fillText('🌲',0,-4);
+  if(t.hp<t.maxHp)for(let i=0;i<t.maxHp;i++){
+    ctx.fillStyle=i<t.hp?'#2ecc71':'#e74c3c';
+    ctx.beginPath();ctx.arc(-10+i*10,10,3.5,0,Math.PI*2);ctx.fill();
+  }
+  ctx.restore();
+}
+function drawRock(r){
+  const p=isoPos(r.c,r.r);
+  if(r.dead)return;
+  ctx.save();ctx.translate(p.x,p.y);
+  drawShadow(r.c,r.r,14,4.5);
+  if(r.shake>0)ctx.translate(Math.sin(Date.now()/38)*r.shake*4,0);
+  ctx.font='30px serif';ctx.textAlign='center';ctx.textBaseline='alphabetic';ctx.fillText('🪨',0,-2);
+  if(r.hp<r.maxHp)for(let i=0;i<r.maxHp;i++){
+    ctx.fillStyle=i<r.hp?'#e67e22':'#e74c3c';
+    ctx.beginPath();ctx.arc(-9+i*9,8,3.2,0,Math.PI*2);ctx.fill();
+  }
+  ctx.restore();
+}
+function drawTulip(tu){
+  const p=isoPos(tu.c,tu.r);
+  if(tu.ready){
+    const sway=Math.sin(Date.now()/500+tu.c*3+tu.r*7)*0.08;
+    ctx.save();ctx.translate(p.x,p.y-2);ctx.rotate(sway);
+    ctx.font='22px serif';ctx.textAlign='center';ctx.textBaseline='alphabetic';ctx.fillText('🌷',0,0);
+    ctx.restore();
+  }else{
+    const scale=0.35+0.65*(tu.timer/TULIP_REGROW);
+    ctx.save();ctx.translate(p.x,p.y-1);ctx.scale(scale,scale);ctx.globalAlpha=0.55+0.45*scale;
+    ctx.font='18px serif';ctx.textAlign='center';ctx.textBaseline='alphabetic';ctx.fillText('🌱',0,0);
+    ctx.restore();
+  }
+  if(P.harvestTarget===tu&&P.harvestTimer>0){
+    ctx.beginPath();ctx.strokeStyle='#FFD700';ctx.lineWidth=2.5;
+    ctx.arc(p.x,p.y-8,14,-Math.PI/2,-Math.PI/2+Math.PI*2*(P.harvestTimer/HARVEST_TIME));ctx.stroke();
+  }
+}
+function drawHouse(){
+  const p=isoPos(HOUSE_C,HOUSE_R);
+  const near=gdist(P.col,P.row,HOUSE_C,HOUSE_R)<SELL_RANGE;
+  drawShadow(HOUSE_C,HOUSE_R,30,10);
+  if(near){
+    ctx.save();ctx.globalAlpha=0.35+0.15*Math.sin(Date.now()/200);
+    ctx.fillStyle='#FFD700';ctx.beginPath();ctx.ellipse(p.x,p.y+3,32,12,0,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  }
+  ctx.font='58px serif';ctx.textAlign='center';ctx.textBaseline='alphabetic';ctx.fillText('🏠',p.x,p.y-6);
+  ctx.font='bold 11px sans-serif';ctx.fillStyle='#2d5a2d';ctx.textAlign='center';
+  ctx.shadowColor='#fff';ctx.shadowBlur=3;ctx.fillText('小屋 (自動賣出)',p.x,p.y-70);ctx.shadowBlur=0;
+}
+function drawPlayer(){
+  const p=isoPos(P.col,P.row);
+  const bob=P.moving?Math.sin(P.frame*Math.PI/2)*2:0;
+  drawShadow(P.col,P.row,13,4.5);
+  ctx.beginPath();ctx.arc(p.x,p.y-14+bob,15,0,Math.PI*2);
+  ctx.fillStyle='#e67e22';ctx.fill();ctx.strokeStyle='#fff';ctx.lineWidth=2.2;ctx.stroke();
+  ctx.font='28px serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('🧑‍🌾',p.x,p.y-15+bob);
+  if(P.harvestTarget&&(P.harvestTarget.hp!==undefined)&&P.harvestTimer>0){
+    ctx.beginPath();ctx.strokeStyle='#FFD700';ctx.lineWidth=2.5;
+    ctx.arc(p.x,p.y-15,19,-Math.PI/2,-Math.PI/2+Math.PI*2*(P.harvestTimer/HARVEST_TIME));ctx.stroke();
+  }
+}
+function drawJoystick(){
+  if(!isMobile)return;
+  ctx.save();ctx.globalAlpha=0.5;
+  ctx.beginPath();ctx.arc(JOY.bx,JOY.by,JOY.r,0,Math.PI*2);ctx.fillStyle='#fff';ctx.fill();
+  ctx.strokeStyle='#2d5a2d';ctx.lineWidth=2;ctx.stroke();
+  ctx.beginPath();ctx.arc(JOY.bx+JOY.kx,JOY.by+JOY.ky,JOY.kr,0,Math.PI*2);
+  ctx.fillStyle='#6fbf4f';ctx.fill();ctx.strokeStyle='#2d5a2d';ctx.lineWidth=2;ctx.stroke();
+  ctx.restore();
+}
+
+function render(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.save();ctx.scale(S,S);
+
+  for(let r=0;r<WROWS;r++)for(let c=0;c<WCOLS;c++) drawGroundTile(c,r);
+
+  const drawables=[];
+  fenceTiles.forEach(f=>drawables.push({key:f.c+f.r-0.4,draw:()=>drawFencePost(f)}));
+  trees.forEach(t=>drawables.push({key:t.c+t.r,draw:()=>drawTree(t)}));
+  rocks.forEach(rk=>drawables.push({key:rk.c+rk.r,draw:()=>drawRock(rk)}));
+  tulips.forEach(tu=>drawables.push({key:tu.c+tu.r-0.2,draw:()=>drawTulip(tu)}));
+  drawables.push({key:HOUSE_C+HOUSE_R-0.3,draw:drawHouse});
+  drawables.push({key:P.col+P.row,draw:drawPlayer});
+  drawables.sort((a,b)=>a.key-b.key);
+  drawables.forEach(d=>d.draw());
+
+  drawParticles();
+  drawJoystick();
+  ctx.restore();
+}
+
+resize();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
