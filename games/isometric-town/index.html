@@ -36,13 +36,22 @@ canvas { border-radius:16px; box-shadow:0 8px 28px rgba(0,60,40,.25),0 0 0 3px r
   font-size: .95rem; font-weight:600; color:#2d5a2d;
 }
 .hud span{ white-space:nowrap; }
+.objective {
+  position: fixed; top: 56px; left: 50%; transform: translateX(-50%); z-index: 20;
+  background: rgba(255,255,255,.85);
+  padding: 5px 14px; border-radius: 999px;
+  box-shadow: 0 3px 8px rgba(0,0,0,.15);
+  font-size: .78rem; font-weight:600; color:#8a5a2f;
+  max-width: 90vw; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
 </style>
 </head>
 <body>
 <a href="../../index.html" target="_top" class="home-link" aria-label="返回主選單" title="返回主選單">🏠</a>
 <div class="hud" id="hud"></div>
+<div class="objective" id="objective"></div>
 <canvas id="c"></canvas>
-<div id="hint">WASD/方向鍵 移動 ‧ 靠近資源自動採集 ‧ 走到小屋旁自動賣出 ‧ 升級商店解鎖工人與花園</div>
+<div id="hint">WASD/方向鍵 移動 ‧ 靠近資源自動採集 ‧ 走到小屋旁自動賣出</div>
 <script>
 // ─── CANVAS / SCALE ───────────────────────────
 const canvas = document.getElementById('c');
@@ -130,6 +139,17 @@ function roundRect(x,y,w,h,rad){
   ctx.lineTo(x+rad,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-rad);
   ctx.lineTo(x,y+rad);ctx.quadraticCurveTo(x,y,x+rad,y);
   ctx.closePath();
+}
+// centered text that clamps to stay fully inside the viewport, so long
+// labels near a world edge (camera clamped) can't clip off-canvas
+function fillTextClamped(text,cx,cy,margin){
+  margin=margin||6;
+  const w=ctx.measureText(text).width;
+  const savedAlign=ctx.textAlign;
+  ctx.textAlign='left';
+  const x=clamp(cx-w/2,margin,VW-margin-w);
+  ctx.fillText(text,x,cy);
+  ctx.textAlign=savedAlign;
 }
 
 // ─── WORLD DATA ───────────────────────────────
@@ -234,6 +254,18 @@ class WorkerAI{
     if(this.state==='move-sell'){
       const d=gdist(this.col,this.row,HOUSE_C,HOUSE_R);
       if(d<1.3){
+        // contribute toward an active house-upgrade deposit first, same as the player does
+        if(gamePhase===1&&HSTATE.level===1){
+          const dW=Math.min(this.wood,Math.max(0,HOUSE_UPGRADE_COST.wood-HSTATE.woodDep));
+          const dS=Math.min(this.stone,Math.max(0,HOUSE_UPGRADE_COST.stone-HSTATE.stoneDep));
+          if(dW>0){this.wood-=dW;HSTATE.woodDep+=dW;}
+          if(dS>0){this.stone-=dS;HSTATE.stoneDep+=dS;}
+        }else if(gamePhase===2&&HSTATE.level===2){
+          const dW=Math.min(this.wood,Math.max(0,HOUSE_UPGRADE2_COST.wood-HSTATE.woodDep2));
+          const dS=Math.min(this.stone,Math.max(0,HOUSE_UPGRADE2_COST.stone-HSTATE.stoneDep2));
+          if(dW>0){this.wood-=dW;HSTATE.woodDep2+=dW;}
+          if(dS>0){this.stone-=dS;HSTATE.stoneDep2+=dS;}
+        }
         const earned=this.wood*WOOD_PRICE+this.stone*STONE_PRICE;
         if(earned>0){P.gold+=earned;spawnParticle(this.col,this.row,`+${earned}🪙`,'#FFD700');sfxSell();}
         this.wood=0;this.stone=0;this.state='idle';this.thinkTimer=rnd(1,2);
@@ -437,7 +469,7 @@ const P={
   harvestTarget:null, harvestType:null, harvestTimer:0,
   moving:false, frame:0, frameTimer:0, facing:1,
   buyTarget:null, buyTimer:0, alertedFull:false,
-  plantTarget:null, plantTimer:0, seedBuyTimer:0, fwBuyTimer:0,
+  plantTarget:null, plantTimer:0, seedBuyTimer:0, fwBuyTimer:0, alertedNoSeeds:false,
 };
 
 // ─── INPUT ────────────────────────────────────
@@ -552,10 +584,10 @@ function update(dt){
   }
 
   // planting seeds into empty patches (once the garden is unlocked)
-  if(gamePhase>=2&&P_seeds>0){
+  if(gamePhase>=2){
     let nearestEmpty=null, ned=harvestRangeEff();
     for(const tu of tulips) if(tu.state==='empty'){const d=gdist(P.col,P.row,tu.c,tu.r);if(d<ned){ned=d;nearestEmpty=tu;}}
-    if(nearestEmpty){
+    if(nearestEmpty&&P_seeds>0){
       if(P.plantTarget!==nearestEmpty){P.plantTarget=nearestEmpty;P.plantTimer=0;}
       P.plantTimer+=dt;
       if(P.plantTimer>=PLANT_TIME){
@@ -563,7 +595,13 @@ function update(dt){
         spawnParticle(nearestEmpty.c,nearestEmpty.r,'🌱','#90EE90');sfxSell();
         P.plantTarget=null;
       }
-    }else{P.plantTarget=null;P.plantTimer=0;}
+      P.alertedNoSeeds=false;
+    }else{
+      P.plantTarget=null;P.plantTimer=0;
+      if(nearestEmpty&&P_seeds<=0){
+        if(!P.alertedNoSeeds){P.alertedNoSeeds=true;spawnParticle(P.col,P.row,'沒有種子了！去買一些吧','#90EE90');}
+      }else P.alertedNoSeeds=false;
+    }
   }else{P.plantTarget=null;P.plantTimer=0;}
 
   // house upgrade -> unlocks the garden (only once shops are maxed).
@@ -728,6 +766,14 @@ function updateHUD(){
   const seedSpan = gamePhase>=2 ? `<span>🌱 ${P_seeds}</span>` : '';
   document.getElementById('hud').innerHTML=
     `<span>🪙 ${P.gold}</span><span>🪵 ${P.wood}</span><span>🪨 ${P.stone}</span><span>🌷 ${P.flowers}</span><span>🎒 ${inventoryCount()}/${maxBag()}</span>${seedSpan}`;
+  document.getElementById('objective').textContent = currentObjective();
+}
+function currentObjective(){
+  if(gamePhase===0) return `目標：升級商店 ⚡${UPG.speed}/3 🎒${UPG.bag}/3 👷${workers.length}/3 → 小屋可升級`;
+  if(gamePhase===1) return '目標：走到小屋旁投入 🪵🪨🪙 升級';
+  if(gamePhase===2) return '目標：種花採收，再回小屋投入 🪵🪨🪙🌷 升級';
+  if(FSTAND.level===0) return '目標：走到花攤旁投入 🪵🪨 興建';
+  return '小鎮蓬勃發展中！繼續採集、種花、照顧寵物吧';
 }
 
 // ─── RENDER ───────────────────────────────────
@@ -832,17 +878,17 @@ function drawHouse(){
     ctx.fillStyle='#FFD700';ctx.beginPath();ctx.ellipse(p.x,p.y+3,32,12,0,0,Math.PI*2);ctx.fill();
     ctx.restore();
   }
-  const houseEmoji = HSTATE.level>=3?'🏘️':HSTATE.level>=2?'🏡':'🏠';
+  const houseEmoji = HSTATE.level>=3?'🏰':HSTATE.level>=2?'🏡':'🏠';
   ctx.font=`58px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='alphabetic';ctx.fillText(houseEmoji,p.x,p.y-6);
   ctx.font='bold 11px sans-serif';ctx.fillStyle='#2d5a2d';ctx.textAlign='center';
   ctx.shadowColor='#fff';ctx.shadowBlur=3;
   if(gamePhase===1&&HSTATE.level===1){
     const c=HOUSE_UPGRADE_COST;
-    ctx.fillText(HSTATE.upgrading?`升級中… ${HSTATE.upgradeTimer.toFixed(1)}/3.0s`:
+    fillTextClamped(HSTATE.upgrading?`升級中… ${HSTATE.upgradeTimer.toFixed(1)}/3.0s`:
       `升級：🪵${HSTATE.woodDep}/${c.wood} 🪨${HSTATE.stoneDep}/${c.stone} 🪙${HSTATE.goldDep}/${c.gold}`,p.x,p.y-70);
   }else if(gamePhase===2&&HSTATE.level===2){
     const c=HOUSE_UPGRADE2_COST;
-    ctx.fillText(HSTATE.upgrading2?`升級中… ${HSTATE.upgradeTimer2.toFixed(1)}/3.5s`:
+    fillTextClamped(HSTATE.upgrading2?`升級中… ${HSTATE.upgradeTimer2.toFixed(1)}/3.5s`:
       `升級：🪵${HSTATE.woodDep2}/${c.wood} 🪨${HSTATE.stoneDep2}/${c.stone} 🪙${HSTATE.goldDep2}/${c.gold} 🌷${HSTATE.flowersDep2}/${c.flowers}`,p.x,p.y-70);
   }else{
     ctx.fillText('小屋 (自動賣出)',p.x,p.y-70);
@@ -878,11 +924,10 @@ function drawWorkerSprite(w){
   drawShadow(w.col,w.row,10,3.5);
   ctx.font=`22px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='middle';
   ctx.fillText('👷',p.x,p.y-10+bob);
-  if(w.wood>0||w.stone>0){
-    ctx.font='9px sans-serif';ctx.fillStyle='#fff';ctx.textAlign='center';
-    ctx.shadowColor='#000';ctx.shadowBlur=2;
-    ctx.fillText(`🪵${w.wood}🪨${w.stone}`,p.x,p.y-24+bob);ctx.shadowBlur=0;
-  }
+  const carried=[];
+  if(w.wood>0)carried.push({emoji:'🪵',count:w.wood,color:'#CD853F'});
+  if(w.stone>0)carried.push({emoji:'🪨',count:w.stone,color:'#bbb'});
+  drawCarriedItems(p.x,p.y-30+bob,carried);
 }
 function drawFlowerWorkerSprite(fw){
   const p=isoPos(fw.col,fw.row);
@@ -892,11 +937,8 @@ function drawFlowerWorkerSprite(fw){
   ctx.fillStyle='#c0426a';ctx.fill();ctx.strokeStyle='#FFB6C1';ctx.lineWidth=1.6;ctx.stroke();
   ctx.font=`19px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='middle';
   ctx.fillText('👩‍🌾',p.x,p.y-9+bob);
-  if(fw.flowers>0){
-    ctx.font='9px sans-serif';ctx.fillStyle='#fff';ctx.textAlign='center';
-    ctx.shadowColor='#000';ctx.shadowBlur=2;
-    ctx.fillText(`🌷${fw.flowers}`,p.x,p.y-23+bob);ctx.shadowBlur=0;
-  }
+  const carried=fw.flowers>0?[{emoji:'🌷',count:fw.flowers,color:'#FF69B4'}]:[];
+  drawCarriedItems(p.x,p.y-29+bob,carried);
 }
 function drawSeedShop(){
   if(gamePhase<2)return;
@@ -1007,6 +1049,28 @@ function drawTool(hand,ang,type){
   }
   ctx.restore();
 }
+// stacks carried-resource icons upward above a point, like a little pile growing on your head
+function drawCarriedItems(cx,cy,items){
+  if(items.length===0)return;
+  const fSize=13, vSp=fSize*0.78, CAP=10;
+  const colGap=items.length===1?0:items.length===2?12:10;
+  const startX=cx-(items.length-1)*colGap/2;
+  ctx.save();ctx.font=`${fSize}px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='middle';
+  items.forEach((col,ci)=>{
+    const colX=startX+ci*colGap, show=Math.min(col.count,CAP);
+    for(let i=0;i<show;i++){
+      const iy=cy-i*vSp, wob=Math.sin(i*1.7+ci*1.2+Date.now()/500)*1.1;
+      ctx.save();ctx.translate(colX+wob,iy);ctx.rotate(Math.sin(i*1.3+ci+Date.now()/600)*0.08);ctx.fillText(col.emoji,0,0);ctx.restore();
+    }
+    if(col.count>CAP){
+      ctx.font='bold 9px sans-serif';ctx.fillStyle=col.color;
+      ctx.shadowColor='#000';ctx.shadowBlur=2;
+      ctx.fillText(`+${col.count-CAP}`,colX,cy-CAP*vSp-6);ctx.shadowBlur=0;
+      ctx.font=`${fSize}px ${EMOJI_FONT}`;
+    }
+  });
+  ctx.restore();
+}
 function drawPlayer(){
   const p=isoPos(P.col,P.row);
   const bob=P.moving?Math.sin(P.frame*Math.PI/2)*1.6:0;
@@ -1061,6 +1125,12 @@ function drawPlayer(){
 
   ctx.restore();
 
+  const carried=[];
+  if(P.wood>0)carried.push({emoji:'🪵',count:P.wood,color:'#CD853F'});
+  if(P.stone>0)carried.push({emoji:'🪨',count:P.stone,color:'#bbb'});
+  if(P.flowers>0)carried.push({emoji:'🌷',count:P.flowers,color:'#FF69B4'});
+  drawCarriedItems(p.x,p.y-58+bob,carried);
+
   if(harvesting){
     ctx.beginPath();ctx.strokeStyle='#FFD700';ctx.lineWidth=2.5;
     ctx.arc(p.x,p.y-20+bob,20,-Math.PI/2,-Math.PI/2+Math.PI*2*hp);ctx.stroke();
@@ -1109,9 +1179,16 @@ function render(){
   if(gamePhase>=3)drawStandCustomers();
 
   if(gamePhase<2){
+    const cp=isoPos((FARM_X0+FARM_X1)/2,(FARM_Y0+FARM_Y1)/2);
+    const pulse=0.75+0.25*Math.sin(Date.now()/450);
+    ctx.save();ctx.globalAlpha=pulse;
+    ctx.font=`36px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.shadowColor='rgba(0,0,0,0.4)';ctx.shadowBlur=6;
+    ctx.fillText('🔒',cp.x,cp.y);
+    ctx.restore();
     const lp=isoPos((FARM_X0+FARM_X1)/2,FARM_Y0-1.6);
-    ctx.font='bold 12px sans-serif';ctx.fillStyle='#5a5a4a';ctx.textAlign='center';
-    ctx.shadowColor='#fff';ctx.shadowBlur=3;
+    ctx.font='bold 13px sans-serif';ctx.fillStyle='#3a3a2e';ctx.textAlign='center';
+    ctx.shadowColor='#fff';ctx.shadowBlur=4;
     ctx.fillText('🔒 升級小屋後開放花園',lp.x,lp.y);
     ctx.shadowBlur=0;
   }
