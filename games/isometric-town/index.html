@@ -42,7 +42,7 @@ canvas { border-radius:16px; box-shadow:0 8px 28px rgba(0,60,40,.25),0 0 0 3px r
 <a href="../../index.html" target="_top" class="home-link" aria-label="返回主選單" title="返回主選單">🏠</a>
 <div class="hud" id="hud"></div>
 <canvas id="c"></canvas>
-<div id="hint">WASD/方向鍵 移動 ‧ 靠近鬱金香/樹木/岩石自動採集 ‧ 走到小屋旁自動賣出</div>
+<div id="hint">WASD/方向鍵 移動 ‧ 靠近資源自動採集 ‧ 走到小屋旁自動賣出 ‧ 升級商店解鎖工人與花園</div>
 <script>
 // ─── CANVAS / SCALE ───────────────────────────
 const canvas = document.getElementById('c');
@@ -134,17 +134,21 @@ function roundRect(x,y,w,h,rad){
 
 // ─── WORLD DATA ───────────────────────────────
 const WOOD_PRICE=5, STONE_PRICE=8, FLOWER_PRICE=15;
-const HARVEST_TIME=0.55, HARVEST_RANGE=0.85, SELL_RANGE=1.3;
-const TREE_REGROW=18, ROCK_REGROW=22, TULIP_REGROW=7;
+const HARVEST_TIME=0.55, HARVEST_RANGE=0.85, SELL_RANGE=1.3, PLANT_TIME=0.8;
+const TREE_REGROW=18, ROCK_REGROW=22, FLOWER_GROW=22;
+const SEED_PRICE=10, SEEDS_PER_BUY=5, FW_COST=80, MAX_FLOWER_WORKERS=3;
 const SPEED_BASE=2.6; // tiles / second, before the speed upgrade
 function playerSpeed(){ return SPEED_BASE+UPG.speed*0.5; }
+let P_seeds=0;
 
+// tulip patches: 'empty' (locked/plantable soil) -> 'growing' -> 'ready'.
+// Locked (gamePhase<2) until the house is upgraded; see unlockGarden().
 const tulips=[];
 for(let r=FARM_Y0;r<=FARM_Y1;r++)for(let c=FARM_X0;c<=FARM_X1;c++){
   if(c===PATH_COL)continue;
-  tulips.push({c,r,timer:rnd(0,TULIP_REGROW),ready:false});
+  tulips.push({c,r,state:'empty',growTimer:0});
 }
-tulips.forEach(t=>{ if(t.timer>=TULIP_REGROW*0.85){t.ready=true;t.timer=TULIP_REGROW;} });
+function unlockGarden(){ tulips.forEach(tu=>{tu.state='empty';tu.growTimer=0;}); }
 
 const trees=[
   {c:5,r:0},{c:7,r:0},{c:9,r:0},{c:11,r:0},{c:13,r:0},{c:15,r:0},{c:17,r:0},{c:19,r:0},
@@ -238,6 +242,109 @@ class WorkerAI{
   }
 }
 
+// ─── HOUSE UPGRADE (unlocks the garden) ────────
+const HOUSE_UPGRADE_COST={wood:25,stone:20,gold:50};
+const HSTATE={level:1,playerNear:false,upgrading:false,upgradeTimer:0,woodDep:0,stoneDep:0,goldDep:0};
+
+// ─── SEED SHOP + FLOWER WORKER SHOP (garden zone) ──
+const SEED_SHOP={c:13,r:14,emoji:'🌱',label:'種子'};
+const FW_SHOP={c:18,r:14,emoji:'👩‍🌾',label:'花農'};
+
+const flowerWorkers=[];
+class FlowerWorkerAI{
+  constructor(c,r){
+    this.col=c;this.row=r;this.flowers=0;
+    this.state='idle';this.target=null;this.harvestTimer=0;this.plantTimer=0;
+    this.speed=1.9;this.thinkTimer=rnd(0.3,1.2);this.frame=0;this.frameTimer=0;
+  }
+  update(dt){
+    this.frameTimer+=dt; if(this.frameTimer>0.18){this.frame=(this.frame+1)%4;this.frameTimer=0;}
+    this.thinkTimer-=dt;
+    const cap=4;
+    if(this.flowers>=cap) this.state='move-sell';
+    if(this.state==='idle'&&this.thinkTimer<0){
+      this.thinkTimer=rnd(1.2,2.5);
+      if(this.flowers<cap){
+        let best=null,bestD=Infinity;
+        for(const tu of tulips) if(tu.state==='ready'){const d=gdist(this.col,this.row,tu.c,tu.r);if(d<bestD){bestD=d;best=tu;}}
+        if(best){this.target=best;this.state='move-harvest';return;}
+        const empties=tulips.filter(tu=>tu.state==='empty');
+        if(empties.length>0){
+          if(P_seeds>0){this.target=empties[0];this.state='move-plant';return;}
+          else if(P.gold>=SEED_PRICE*SEEDS_PER_BUY){this.state='move-buy-seeds';return;}
+        }
+      }else this.state='move-sell';
+    }
+    if(this.state==='move-harvest'&&this.target){
+      if(this.target.state!=='ready'){this.target=null;this.state='idle';this.thinkTimer=0;return;}
+      const d=gdist(this.col,this.row,this.target.c,this.target.r);
+      if(d<0.6)this.state='harvest';
+      else{this.col+=(this.target.c-this.col)/d*this.speed*dt;this.row+=(this.target.r-this.row)/d*this.speed*dt;}
+    }
+    if(this.state==='harvest'&&this.target){
+      if(this.target.state!=='ready'){this.target=null;this.state='idle';return;}
+      this.harvestTimer+=dt;
+      if(this.harvestTimer>=0.6){
+        this.harvestTimer=0;
+        this.flowers++; this.target.state='empty';
+        spawnParticle(this.target.c,this.target.r,'+🌷','#FF69B4'); sfxBloom();
+        this.target=null;this.state='idle';this.thinkTimer=0;
+      }
+    }
+    if(this.state==='move-buy-seeds'){
+      const d=gdist(this.col,this.row,SEED_SHOP.c,SEED_SHOP.r);
+      if(d<1.0){
+        if(P.gold>=SEED_PRICE*SEEDS_PER_BUY){
+          P.gold-=SEED_PRICE*SEEDS_PER_BUY;P_seeds+=SEEDS_PER_BUY;
+          spawnParticle(SEED_SHOP.c,SEED_SHOP.r,`🌱×${SEEDS_PER_BUY}`,'#90EE90');sfxSell();
+        }
+        const empties=tulips.filter(tu=>tu.state==='empty');
+        if(empties.length>0&&P_seeds>0){this.target=empties[0];this.state='move-plant';}
+        else{this.state='idle';this.thinkTimer=rnd(1,2);}
+      }else{this.col+=(SEED_SHOP.c-this.col)/d*this.speed*dt;this.row+=(SEED_SHOP.r-this.row)/d*this.speed*dt;}
+    }
+    if(this.state==='move-plant'&&this.target){
+      if(this.target.state!=='empty'){
+        const empties=tulips.filter(tu=>tu.state==='empty');
+        if(empties.length>0&&P_seeds>0){this.target=empties[0];}
+        else{this.state='idle';this.thinkTimer=rnd(1,2);return;}
+      }
+      const d=gdist(this.col,this.row,this.target.c,this.target.r);
+      if(d<0.6){this.state='plant';this.plantTimer=0;}
+      else{this.col+=(this.target.c-this.col)/d*this.speed*dt;this.row+=(this.target.r-this.row)/d*this.speed*dt;}
+    }
+    if(this.state==='plant'&&this.target){
+      if(this.target.state!=='empty'){this.state='idle';this.thinkTimer=0;return;}
+      this.plantTimer+=dt;
+      if(this.plantTimer>=0.9){
+        if(P_seeds>0){
+          this.target.state='growing';this.target.growTimer=0;P_seeds--;
+          spawnParticle(this.target.c,this.target.r,'🌱','#90EE90');sfxSell();
+        }
+        const empties=tulips.filter(tu=>tu.state==='empty');
+        if(empties.length>0&&P_seeds>0){this.target=empties[0];this.state='move-plant';}
+        else if(empties.length>0&&P.gold>=SEED_PRICE*SEEDS_PER_BUY){this.state='move-buy-seeds';this.target=null;}
+        else{this.state='idle';this.thinkTimer=rnd(1,2);}
+      }
+    }
+    if(this.state==='move-sell'){
+      const useStand=typeof FSTAND!=='undefined'&&gamePhase>=3&&FSTAND.level>0;
+      const tc=useStand?FSTAND.c:HOUSE_C, tr=useStand?FSTAND.r:HOUSE_R;
+      const d=gdist(this.col,this.row,tc,tr);
+      if(d<1.3){
+        if(useStand){
+          if(this.flowers>0){FSTAND.inventory+=this.flowers;spawnParticle(tc,tr,`+${this.flowers}🌸`,'#FF69B4');sfxSell();this.flowers=0;}
+        }else{
+          const earned=this.flowers*FLOWER_PRICE;
+          if(earned>0){P.gold+=earned;spawnParticle(this.col,this.row,`+${earned}🪙`,'#FFD700');sfxSell();}
+          this.flowers=0;
+        }
+        this.state='idle';this.thinkTimer=rnd(1,2);
+      }else{this.col+=(tc-this.col)/d*this.speed*dt;this.row+=(tr-this.row)/d*this.speed*dt;}
+    }
+  }
+}
+
 // ─── PARTICLES ────────────────────────────────
 const parts=[];
 function spawnParticle(c,r,text,color){
@@ -265,6 +372,7 @@ const P={
   harvestTarget:null, harvestType:null, harvestTimer:0,
   moving:false, frame:0, frameTimer:0, facing:1,
   buyTarget:null, buyTimer:0, alertedFull:false,
+  plantTarget:null, plantTimer:0, seedBuyTimer:0, fwBuyTimer:0,
 };
 
 // ─── INPUT ────────────────────────────────────
@@ -340,14 +448,14 @@ function update(dt){
   // world regrowth
   for(const t of trees){ if(t.dead){ t.regrow-=dt; if(t.regrow<=0){t.dead=false;t.hp=t.maxHp;} } if(t.shake>0)t.shake-=dt; }
   for(const r of rocks){ if(r.dead){ r.regrow-=dt; if(r.regrow<=0){r.dead=false;r.hp=r.maxHp;} } if(r.shake>0)r.shake-=dt; }
-  for(const tu of tulips){ if(!tu.ready){ tu.timer+=dt; if(tu.timer>=TULIP_REGROW){tu.ready=true;tu.timer=TULIP_REGROW;} } }
+  for(const tu of tulips){ if(tu.state==='growing'){ tu.growTimer+=dt; if(tu.growTimer>=FLOWER_GROW){tu.state='ready';} } }
 
   // harvesting (nearest ready resource in range) — gated by backpack capacity
   if(inventoryCount()<maxBag()){
     let nearest=null, nd=HARVEST_RANGE;
     for(const t of trees) if(!t.dead){const d=gdist(P.col,P.row,t.c,t.r);if(d<nd){nd=d;nearest={obj:t,type:'tree'};}}
     for(const r of rocks) if(!r.dead){const d=gdist(P.col,P.row,r.c,r.r);if(d<nd){nd=d;nearest={obj:r,type:'rock'};}}
-    if(gamePhase>=2) for(const tu of tulips) if(tu.ready){const d=gdist(P.col,P.row,tu.c,tu.r);if(d<nd){nd=d;nearest={obj:tu,type:'tulip'};}}
+    if(gamePhase>=2) for(const tu of tulips) if(tu.state==='ready'){const d=gdist(P.col,P.row,tu.c,tu.r);if(d<nd){nd=d;nearest={obj:tu,type:'tulip'};}}
     if(nearest){
       if(P.harvestTarget!==nearest.obj){P.harvestTarget=nearest.obj;P.harvestTimer=0;}
       P.harvestType=nearest.type;
@@ -365,7 +473,7 @@ function update(dt){
           spawnParticle(obj.c,obj.r,'+🪨','#bbb');sfxMine();
           if(obj.hp<=0){obj.dead=true;obj.regrow=ROCK_REGROW;P.harvestTarget=null;}
         }else{
-          obj.ready=false;obj.timer=0;P.flowers++;
+          obj.state='empty';P.flowers++;
           spawnParticle(obj.c,obj.r,'+🌷','#FF69B4');sfxBloom();
           P.harvestTarget=null;
         }
@@ -377,12 +485,78 @@ function update(dt){
     if(!P.alertedFull){P.alertedFull=true;spawnParticle(P.col,P.row,'背包滿了！去賣吧','#F39C12');}
   }
 
-  // sell at house
+  // planting seeds into empty patches (once the garden is unlocked)
+  if(gamePhase>=2&&P_seeds>0){
+    let nearestEmpty=null, ned=HARVEST_RANGE;
+    for(const tu of tulips) if(tu.state==='empty'){const d=gdist(P.col,P.row,tu.c,tu.r);if(d<ned){ned=d;nearestEmpty=tu;}}
+    if(nearestEmpty){
+      if(P.plantTarget!==nearestEmpty){P.plantTarget=nearestEmpty;P.plantTimer=0;}
+      P.plantTimer+=dt;
+      if(P.plantTimer>=PLANT_TIME){
+        P.plantTimer=0;P_seeds--;nearestEmpty.state='growing';nearestEmpty.growTimer=0;
+        spawnParticle(nearestEmpty.c,nearestEmpty.r,'🌱','#90EE90');sfxSell();
+        P.plantTarget=null;
+      }
+    }else{P.plantTarget=null;P.plantTimer=0;}
+  }else{P.plantTarget=null;P.plantTimer=0;}
+
+  // house upgrade -> unlocks the garden (only once shops are maxed).
+  // Runs before the generic sell-at-house block so deposits get first claim
+  // on carried wood/stone; whatever's left over still gets sold as usual.
+  if(gamePhase===1&&HSTATE.level===1){
+    const hnear=gdist(P.col,P.row,HOUSE_C,HOUSE_R)<SELL_RANGE;
+    if(hnear){
+      if(!HSTATE.playerNear){
+        HSTATE.playerNear=true;
+        const needW=Math.max(0,HOUSE_UPGRADE_COST.wood-HSTATE.woodDep);
+        const needS=Math.max(0,HOUSE_UPGRADE_COST.stone-HSTATE.stoneDep);
+        const needG=Math.max(0,HOUSE_UPGRADE_COST.gold-HSTATE.goldDep);
+        const dW=Math.min(P.wood,needW), dS=Math.min(P.stone,needS), dG=Math.min(P.gold,needG);
+        if(dW>0){P.wood-=dW;HSTATE.woodDep+=dW;spawnParticle(HOUSE_C,HOUSE_R,`投入🪵×${dW}`,'#CD853F');}
+        if(dS>0){P.stone-=dS;HSTATE.stoneDep+=dS;spawnParticle(HOUSE_C,HOUSE_R,`投入🪨×${dS}`,'#bbb');}
+        if(dG>0){P.gold-=dG;HSTATE.goldDep+=dG;spawnParticle(HOUSE_C,HOUSE_R,`投入🪙×${dG}`,'#FFD700');}
+      }
+      const funded=HSTATE.woodDep>=HOUSE_UPGRADE_COST.wood&&HSTATE.stoneDep>=HOUSE_UPGRADE_COST.stone&&HSTATE.goldDep>=HOUSE_UPGRADE_COST.gold;
+      if(funded){
+        HSTATE.upgrading=true;HSTATE.upgradeTimer+=dt;
+        if(HSTATE.upgradeTimer>=3){
+          HSTATE.level=2;HSTATE.upgrading=false;HSTATE.upgradeTimer=0;
+          gamePhase=2;unlockGarden();
+          spawnParticle(HOUSE_C,HOUSE_R,'🏡 花園開放了！','#FFD700');sfxSell();
+        }
+      }else HSTATE.upgrading=false;
+    }else{HSTATE.playerNear=false;if(!HSTATE.upgrading)HSTATE.upgradeTimer=0;}
+  }
+
+  // sell at house (whatever wasn't just claimed by the upgrade deposit above)
   if(gdist(P.col,P.row,HOUSE_C,HOUSE_R)<SELL_RANGE && (P.wood>0||P.stone>0||P.flowers>0)){
     const earned=P.wood*WOOD_PRICE+P.stone*STONE_PRICE+P.flowers*FLOWER_PRICE;
     P.gold+=earned;
     spawnParticle(HOUSE_C,HOUSE_R,`+${earned}🪙`,'#FFD700');sfxSell();
     P.wood=0;P.stone=0;P.flowers=0;
+  }
+
+  // seed shop
+  if(gamePhase>=2){
+    const nearSeed=gdist(P.col,P.row,SEED_SHOP.c,SEED_SHOP.r)<1.15;
+    if(nearSeed&&P.gold>=SEED_PRICE*SEEDS_PER_BUY){
+      P.seedBuyTimer+=dt;
+      if(P.seedBuyTimer>=BUY_TIME){
+        P.gold-=SEED_PRICE*SEEDS_PER_BUY;P_seeds+=SEEDS_PER_BUY;P.seedBuyTimer=0;
+        spawnParticle(SEED_SHOP.c,SEED_SHOP.r,`🌱×${SEEDS_PER_BUY}`,'#90EE90');sfxSell();
+      }
+    }else P.seedBuyTimer=0;
+
+    const nearFW=gdist(P.col,P.row,FW_SHOP.c,FW_SHOP.r)<1.15;
+    if(nearFW&&flowerWorkers.length<MAX_FLOWER_WORKERS&&P.gold>=FW_COST){
+      P.fwBuyTimer+=dt;
+      if(P.fwBuyTimer>=BUY_TIME){
+        P.gold-=FW_COST;flowerWorkers.push(new FlowerWorkerAI(FW_SHOP.c,FW_SHOP.r+1));P.fwBuyTimer=0;
+        spawnParticle(FW_SHOP.c,FW_SHOP.r,'👩‍🌾 花農僱用！','#FF69B4');sfxSell();
+      }
+    }else P.fwBuyTimer=0;
+
+    for(const fw of flowerWorkers) fw.update(dt);
   }
 
   // upgrade shops
@@ -415,15 +589,19 @@ function update(dt){
 }
 
 function updateHUD(){
+  const seedSpan = gamePhase>=2 ? `<span>🌱 ${P_seeds}</span>` : '';
   document.getElementById('hud').innerHTML=
-    `<span>🪙 ${P.gold}</span><span>🪵 ${P.wood}</span><span>🪨 ${P.stone}</span><span>🌷 ${P.flowers}</span><span>🎒 ${inventoryCount()}/${maxBag()}</span>`;
+    `<span>🪙 ${P.gold}</span><span>🪵 ${P.wood}</span><span>🪨 ${P.stone}</span><span>🌷 ${P.flowers}</span><span>🎒 ${inventoryCount()}/${maxBag()}</span>${seedSpan}`;
 }
 
 // ─── RENDER ───────────────────────────────────
 function groundColor(c,r){
   if(isEntrance(c,r)) return (r+c)%2===0?'#a9713c':'#9c6836';
   if(isPath(c,r)) return (c+r)%2===0?'#c9a06a':'#bd934f';
-  if(isFarm(c,r)) return (c+r)%2===0?'#8a6642':'#7d5a39';
+  if(isFarm(c,r)){
+    if(gamePhase<2) return (c+r)%2===0?'#8a8a7a':'#7d7d6d'; // locked: duller, less inviting
+    return (c+r)%2===0?'#8a6642':'#7d5a39';
+  }
   return (c+r)%2===0?'#6fbf4f':'#63b247';
 }
 function drawGroundTile(c,r){
@@ -487,14 +665,15 @@ function drawRock(r){
   ctx.restore();
 }
 function drawTulip(tu){
+  if(gamePhase<2)return; // locked soil, nothing to draw beyond the tilled ground tile
   const p=isoPos(tu.c,tu.r);
-  if(tu.ready){
+  if(tu.state==='ready'){
     const sway=Math.sin(Date.now()/500+tu.c*3+tu.r*7)*0.08;
     ctx.save();ctx.translate(p.x,p.y-2);ctx.rotate(sway);
     ctx.font=`22px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='alphabetic';ctx.fillText('🌷',0,0);
     ctx.restore();
-  }else{
-    const scale=0.35+0.65*(tu.timer/TULIP_REGROW);
+  }else if(tu.state==='growing'){
+    const scale=0.35+0.65*(tu.growTimer/FLOWER_GROW);
     ctx.save();ctx.translate(p.x,p.y-1);ctx.scale(scale,scale);ctx.globalAlpha=0.55+0.45*scale;
     ctx.font=`18px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='alphabetic';ctx.fillText('🌱',0,0);
     ctx.restore();
@@ -502,6 +681,10 @@ function drawTulip(tu){
   if(P.harvestTarget===tu&&P.harvestTimer>0){
     ctx.beginPath();ctx.strokeStyle='#FFD700';ctx.lineWidth=2.5;
     ctx.arc(p.x,p.y-8,14,-Math.PI/2,-Math.PI/2+Math.PI*2*(P.harvestTimer/HARVEST_TIME));ctx.stroke();
+  }
+  if(P.plantTarget===tu&&P.plantTimer>0){
+    ctx.beginPath();ctx.strokeStyle='#90EE90';ctx.lineWidth=2.5;
+    ctx.arc(p.x,p.y-4,10,-Math.PI/2,-Math.PI/2+Math.PI*2*(P.plantTimer/PLANT_TIME));ctx.stroke();
   }
 }
 function drawHouse(){
@@ -515,7 +698,17 @@ function drawHouse(){
   }
   ctx.font=`58px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='alphabetic';ctx.fillText('🏠',p.x,p.y-6);
   ctx.font='bold 11px sans-serif';ctx.fillStyle='#2d5a2d';ctx.textAlign='center';
-  ctx.shadowColor='#fff';ctx.shadowBlur=3;ctx.fillText('小屋 (自動賣出)',p.x,p.y-70);ctx.shadowBlur=0;
+  ctx.shadowColor='#fff';ctx.shadowBlur=3;
+  if(gamePhase===0){
+    ctx.fillText('小屋 (自動賣出)',p.x,p.y-70);
+  }else if(gamePhase===1&&HSTATE.level===1){
+    const c=HOUSE_UPGRADE_COST;
+    ctx.fillText(HSTATE.upgrading?`升級中… ${HSTATE.upgradeTimer.toFixed(1)}/3.0s`:
+      `升級：🪵${HSTATE.woodDep}/${c.wood} 🪨${HSTATE.stoneDep}/${c.stone} 🪙${HSTATE.goldDep}/${c.gold}`,p.x,p.y-70);
+  }else{
+    ctx.fillText('小屋 (自動賣出)',p.x,p.y-70);
+  }
+  ctx.shadowBlur=0;
 }
 function drawShopStall(s){
   drawShadow(s.c,s.r,17,5.5);
@@ -550,6 +743,58 @@ function drawWorkerSprite(w){
     ctx.font='9px sans-serif';ctx.fillStyle='#fff';ctx.textAlign='center';
     ctx.shadowColor='#000';ctx.shadowBlur=2;
     ctx.fillText(`🪵${w.wood}🪨${w.stone}`,p.x,p.y-24+bob);ctx.shadowBlur=0;
+  }
+}
+function drawFlowerWorkerSprite(fw){
+  const p=isoPos(fw.col,fw.row);
+  const bob=Math.sin(fw.frame*Math.PI/2)*1.5;
+  drawShadow(fw.col,fw.row,10,3.5);
+  ctx.beginPath();ctx.arc(p.x,p.y-9+bob,11,0,Math.PI*2);
+  ctx.fillStyle='#c0426a';ctx.fill();ctx.strokeStyle='#FFB6C1';ctx.lineWidth=1.6;ctx.stroke();
+  ctx.font=`19px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText('👩‍🌾',p.x,p.y-9+bob);
+  if(fw.flowers>0){
+    ctx.font='9px sans-serif';ctx.fillStyle='#fff';ctx.textAlign='center';
+    ctx.shadowColor='#000';ctx.shadowBlur=2;
+    ctx.fillText(`🌷${fw.flowers}`,p.x,p.y-23+bob);ctx.shadowBlur=0;
+  }
+}
+function drawSeedShop(){
+  if(gamePhase<2)return;
+  drawShadow(SEED_SHOP.c,SEED_SHOP.r,17,5.5);
+  const p=isoPos(SEED_SHOP.c,SEED_SHOP.r);
+  const cost=SEED_PRICE*SEEDS_PER_BUY, canBuy=P.gold>=cost;
+  const w=44,h=38;
+  ctx.fillStyle=canBuy?'#3fa85c':'#6b7f6f';
+  roundRect(p.x-w/2,p.y-h,w,h,8);ctx.fill();
+  ctx.strokeStyle='#2d5a2d';ctx.lineWidth=2;roundRect(p.x-w/2,p.y-h,w,h,8);ctx.stroke();
+  ctx.font=`24px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('🌱',p.x,p.y-h+15);
+  ctx.font='bold 9px sans-serif';ctx.fillStyle='#fff';ctx.fillText('種子攤',p.x,p.y-h+29);
+  ctx.font='9px sans-serif';ctx.fillStyle=canBuy?'#FFD700':'#eee';
+  ctx.fillText(`${cost}🪙→${SEEDS_PER_BUY}顆`,p.x,p.y-6);
+  if(gdist(P.col,P.row,SEED_SHOP.c,SEED_SHOP.r)<1.15&&canBuy){
+    const prog=P.seedBuyTimer/BUY_TIME;
+    ctx.fillStyle='rgba(255,215,0,0.3)';roundRect(p.x-w/2+3,p.y-11,w-6,4,2);ctx.fill();
+    ctx.fillStyle='#FFD700';roundRect(p.x-w/2+3,p.y-11,(w-6)*prog,4,2);ctx.fill();
+  }
+}
+function drawFWShop(){
+  if(gamePhase<2)return;
+  drawShadow(FW_SHOP.c,FW_SHOP.r,17,5.5);
+  const p=isoPos(FW_SHOP.c,FW_SHOP.r);
+  const maxed=flowerWorkers.length>=MAX_FLOWER_WORKERS, canBuy=!maxed&&P.gold>=FW_COST;
+  const w=44,h=38;
+  ctx.fillStyle=maxed?'#8a8a8a':(canBuy?'#3fa85c':'#6b7f6f');
+  roundRect(p.x-w/2,p.y-h,w,h,8);ctx.fill();
+  ctx.strokeStyle='#2d5a2d';ctx.lineWidth=2;roundRect(p.x-w/2,p.y-h,w,h,8);ctx.stroke();
+  ctx.font=`24px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('👩‍🌾',p.x,p.y-h+15);
+  ctx.font='bold 9px sans-serif';ctx.fillStyle='#fff';ctx.fillText('花農',p.x,p.y-h+29);
+  ctx.font='9px sans-serif';ctx.fillStyle=maxed?'#FFD700':(canBuy?'#FFD700':'#eee');
+  ctx.fillText(maxed?'MAX':`${FW_COST}🪙`,p.x,p.y-6);
+  if(!maxed&&gdist(P.col,P.row,FW_SHOP.c,FW_SHOP.r)<1.15&&canBuy){
+    const prog=P.fwBuyTimer/BUY_TIME;
+    ctx.fillStyle='rgba(255,215,0,0.3)';roundRect(p.x-w/2+3,p.y-11,w-6,4,2);ctx.fill();
+    ctx.fillStyle='#FFD700';roundRect(p.x-w/2+3,p.y-11,(w-6)*prog,4,2);ctx.fill();
   }
 }
 // local origin = ground contact point; ang=0 points straight down, +ang swings toward +x (forward)
@@ -662,9 +907,22 @@ function render(){
   drawables.push({key:HOUSE_C+HOUSE_R-0.3,draw:drawHouse});
   SHOPS.forEach(s=>drawables.push({key:s.c+s.r-0.3,draw:()=>drawShopStall(s)}));
   workers.forEach(w=>drawables.push({key:w.col+w.row,draw:()=>drawWorkerSprite(w)}));
+  if(gamePhase>=2){
+    drawables.push({key:SEED_SHOP.c+SEED_SHOP.r-0.3,draw:drawSeedShop});
+    drawables.push({key:FW_SHOP.c+FW_SHOP.r-0.3,draw:drawFWShop});
+    flowerWorkers.forEach(fw=>drawables.push({key:fw.col+fw.row,draw:()=>drawFlowerWorkerSprite(fw)}));
+  }
   drawables.push({key:P.col+P.row,draw:drawPlayer});
   drawables.sort((a,b)=>a.key-b.key);
   drawables.forEach(d=>d.draw());
+
+  if(gamePhase<2){
+    const lp=isoPos((FARM_X0+FARM_X1)/2,FARM_Y0-1.6);
+    ctx.font='bold 12px sans-serif';ctx.fillStyle='#5a5a4a';ctx.textAlign='center';
+    ctx.shadowColor='#fff';ctx.shadowBlur=3;
+    ctx.fillText('🔒 升級小屋後開放花園',lp.x,lp.y);
+    ctx.shadowBlur=0;
+  }
 
   drawParticles();
   drawJoystick();
