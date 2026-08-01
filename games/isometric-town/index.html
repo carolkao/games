@@ -1,0 +1,1206 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>🏘️ 立體小鎮 🏘️</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; touch-action:none; }
+body {
+  background: linear-gradient(180deg, #bfe8ff 0%, #eaf7e0 55%, #d9f2c4 100%);
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  min-height:100vh; overflow:hidden; user-select:none;
+  font-family: -apple-system, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+}
+canvas { border-radius:16px; box-shadow:0 8px 28px rgba(0,60,40,.25),0 0 0 3px rgba(255,255,255,.5); display:block; }
+#hint { color:rgba(30,60,30,0.55); font-size:11px; margin-top:8px; letter-spacing:.5px; }
+@media (max-width: 700px) {
+  body { min-height: 100svh; }
+  canvas { border-radius: 0; box-shadow: none; }
+}
+.home-link {
+  position: fixed; top: 10px; left: 10px; z-index: 20;
+  width: 40px; height: 40px; border-radius: 50%;
+  background: rgba(255,255,255,.85);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.3rem; text-decoration: none;
+  box-shadow: 0 3px 8px rgba(0,0,0,.15);
+}
+.home-link:active { transform: scale(.92); }
+.hud {
+  position: fixed; top: 10px; right: 10px; z-index: 20;
+  display:flex; gap:10px;
+  background: rgba(255,255,255,.85);
+  padding: 7px 14px; border-radius: 999px;
+  box-shadow: 0 3px 8px rgba(0,0,0,.15);
+  font-size: .95rem; font-weight:600; color:#2d5a2d;
+}
+.hud span{ white-space:nowrap; }
+.objective {
+  position: fixed; top: 56px; left: 50%; transform: translateX(-50%); z-index: 20;
+  background: rgba(255,255,255,.85);
+  padding: 5px 14px; border-radius: 999px;
+  box-shadow: 0 3px 8px rgba(0,0,0,.15);
+  font-size: .78rem; font-weight:600; color:#8a5a2f;
+  max-width: 90vw; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+</style>
+</head>
+<body>
+<a href="../../index.html" target="_top" class="home-link" aria-label="返回主選單" title="返回主選單">🏠</a>
+<div class="hud" id="hud"></div>
+<div class="objective" id="objective"></div>
+<canvas id="c"></canvas>
+<div id="hint">WASD/方向鍵 移動 ‧ 靠近資源自動採集 ‧ 走到小屋旁自動賣出</div>
+<script>
+// ─── CANVAS / SCALE ───────────────────────────
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const isMobile = matchMedia("(max-width: 700px), (pointer: coarse)").matches;
+if(isMobile) document.getElementById('hint').style.display='none';
+
+// ─── ISOMETRIC GRID ───────────────────────────
+const A=32, B=16; // tile half-width / half-height
+const WCOLS=24, WROWS=22;
+const FARM_X0=10, FARM_W=7, FARM_Y0=3, FARM_H=9;
+const FARM_X1=FARM_X0+FARM_W-1, FARM_Y1=FARM_Y0+FARM_H-1;
+const PATH_COL=FARM_X0+3;
+const HOUSE_C=2, HOUSE_R=2;
+
+function isFarm(c,r){ return c>=FARM_X0&&c<=FARM_X1&&r>=FARM_Y0&&r<=FARM_Y1; }
+function isPath(c,r){ return isFarm(c,r)&&c===PATH_COL; }
+function isEntrance(c,r){ return r===FARM_Y1+1&&(c===FARM_X1-1||c===FARM_X1); }
+function isFenceRing(c,r){
+  if(isEntrance(c,r)) return false;
+  if(r===FARM_Y0-1&&c>=FARM_X0-1&&c<=FARM_X1+1) return true;
+  if(r===FARM_Y1+1&&c>=FARM_X0-1&&c<=FARM_X1+1) return true;
+  if(c===FARM_X0-1&&r>=FARM_Y0-1&&r<=FARM_Y1+1) return true;
+  if(c===FARM_X1+1&&r>=FARM_Y0-1&&r<=FARM_Y1+1) return true;
+  return false;
+}
+function isHouse(c,r){ return c===HOUSE_C&&r===HOUSE_R; }
+
+// world bounding box, in projected pixel space (the camera scrolls within this)
+const minSx=(0-(WROWS-1))*A, maxSx=(WCOLS-1-0)*A;
+const minSy=0, maxSy=(WCOLS-1+WROWS-1)*B;
+const TOP_PAD=76, SIDE_PAD=A+20, BOTTOM_PAD=B+24;
+const WORLD_W=maxSx-minSx+SIDE_PAD*2, WORLD_H=maxSy-minSy+TOP_PAD+BOTTOM_PAD;
+const ORIGIN_X=-minSx+SIDE_PAD, ORIGIN_Y=TOP_PAD-minSy;
+function isoWorld(c,r){ return { x:ORIGIN_X+(c-r)*A, y:ORIGIN_Y+(c+r)*B }; }
+const cam={x:0,y:0};
+function isoPos(c,r){ const w=isoWorld(c,r); return { x:w.x-cam.x, y:w.y-cam.y }; }
+const EMOJI_FONT='"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif';
+
+// viewport: fills the phone screen on mobile, a fixed fitted window on desktop.
+// The camera follows the player inside the (larger) world instead of shrinking
+// the whole map to fit, so portrait phones get a properly-framed view.
+let VW=760, VH=560, S=1;
+function resize(){
+  if(isMobile){
+    VW=Math.max(320,Math.round(window.innerWidth));
+    VH=Math.max(420,Math.round(window.innerHeight));
+    S=1;
+  }else{
+    VW=760;VH=560;
+    S=Math.min((window.innerWidth-8)/VW,(window.innerHeight-28)/VH);
+    S=Math.max(0.4,Math.min(S,2));
+  }
+  canvas.width=Math.round(VW*S); canvas.height=Math.round(VH*S);
+  JOY.by=VH-64;
+}
+
+// ─── AUDIO ────────────────────────────────────
+let AC;
+function initAudio(){ if(!AC) AC=new(window.AudioContext||window.webkitAudioContext)(); }
+function beep(freq,type,vol,dur){
+  if(!AC)return;
+  const o=AC.createOscillator(),g=AC.createGain();
+  o.connect(g);g.connect(AC.destination);
+  o.type=type;o.frequency.value=freq;
+  g.gain.setValueAtTime(vol,AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001,AC.currentTime+dur);
+  o.start();o.stop(AC.currentTime+dur);
+}
+const sfxChop  = ()=>beep(140+Math.random()*40,'sawtooth',0.12,0.07);
+const sfxMine  = ()=>beep(90+Math.random()*20,'square',0.10,0.09);
+const sfxBloom = ()=>beep(880+Math.random()*100,'sine',0.08,0.12);
+const sfxSell  = ()=>[523,659,784,1047].forEach((f,i)=>setTimeout(()=>beep(f,'sine',0.18,0.12),i*65));
+canvas.addEventListener('pointerdown',initAudio,{once:true});
+document.addEventListener('keydown',initAudio,{once:true});
+
+// ─── HELPERS ──────────────────────────────────
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+function gdist(c1,r1,c2,r2){ return Math.hypot(c1-c2,r1-r2); }
+function roundRect(x,y,w,h,rad){
+  ctx.beginPath();
+  ctx.moveTo(x+rad,y);ctx.lineTo(x+w-rad,y);ctx.quadraticCurveTo(x+w,y,x+w,y+rad);
+  ctx.lineTo(x+w,y+h-rad);ctx.quadraticCurveTo(x+w,y+h,x+w-rad,y+h);
+  ctx.lineTo(x+rad,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-rad);
+  ctx.lineTo(x,y+rad);ctx.quadraticCurveTo(x,y,x+rad,y);
+  ctx.closePath();
+}
+// centered text that clamps to stay fully inside the viewport, so long
+// labels near a world edge (camera clamped) can't clip off-canvas
+function fillTextClamped(text,cx,cy,margin){
+  margin=margin||6;
+  const w=ctx.measureText(text).width;
+  const savedAlign=ctx.textAlign;
+  ctx.textAlign='left';
+  const x=clamp(cx-w/2,margin,VW-margin-w);
+  ctx.fillText(text,x,cy);
+  ctx.textAlign=savedAlign;
+}
+
+// ─── WORLD DATA ───────────────────────────────
+const WOOD_PRICE=5, STONE_PRICE=8, FLOWER_PRICE=15;
+const HARVEST_TIME=0.55, HARVEST_RANGE=0.85, SELL_RANGE=1.3, PLANT_TIME=0.8;
+const TREE_REGROW=18, ROCK_REGROW=22, FLOWER_GROW=22;
+const SEED_PRICE=10, SEEDS_PER_BUY=5, FW_COST=80, MAX_FLOWER_WORKERS=3;
+const SPEED_BASE=2.6; // tiles / second, before the speed upgrade
+function playerSpeed(){ return SPEED_BASE+UPG.speed*0.5; }
+let P_seeds=0;
+
+// tulip patches: 'empty' (locked/plantable soil) -> 'growing' -> 'ready'.
+// Locked (gamePhase<2) until the house is upgraded; see unlockGarden().
+const tulips=[];
+for(let r=FARM_Y0;r<=FARM_Y1;r++)for(let c=FARM_X0;c<=FARM_X1;c++){
+  if(c===PATH_COL)continue;
+  tulips.push({c,r,state:'empty',growTimer:0});
+}
+function unlockGarden(){ tulips.forEach(tu=>{tu.state='empty';tu.growTimer=0;}); }
+
+const trees=[
+  {c:5,r:0},{c:7,r:0},{c:9,r:0},{c:11,r:0},{c:13,r:0},{c:15,r:0},{c:17,r:0},{c:19,r:0},
+  {c:0,r:4},{c:0,r:10},{c:0,r:16},
+].map(p=>({...p,hp:3,maxHp:3,dead:false,regrow:0,shake:0}));
+
+const rocks=[
+  {c:23,r:2},{c:23,r:5},{c:23,r:8},{c:23,r:11},{c:23,r:14},{c:23,r:17},{c:23,r:20},
+].map(p=>({...p,hp:3,maxHp:3,dead:false,regrow:0,shake:0}));
+
+const fenceTiles=[];
+for(let r=0;r<WROWS;r++)for(let c=0;c<WCOLS;c++) if(isFenceRing(c,r)) fenceTiles.push({c,r});
+
+// Continuous distance check (not tile-rounding) so the player can never end up
+// standing exactly on a rounding boundary and get stuck unable to leave.
+// Must be > 0.5 (half the 1.0 tile spacing) or adjacent posts' circles leave a
+// gap at the seam between them that a diagonal approach can slip through.
+const FENCE_BLOCK_R=0.58;
+function nearFence(col,row){
+  for(const f of fenceTiles) if(Math.hypot(col-f.c,row-f.r)<FENCE_BLOCK_R) return true;
+  return false;
+}
+
+// ─── PROGRESSION ───────────────────────────────
+// 0=basic (shops+workers only) → 1=house upgradable → 2=garden unlocked → 3=stand+pets unlocked
+let gamePhase=0;
+
+// ─── UPGRADE SHOPS ─────────────────────────────
+const BUY_TIME=1.2;
+const SHOPS=[
+  {c:2,r:6, type:'speed',  emoji:'⚡',label:'快腿'},
+  {c:2,r:9, type:'bag',    emoji:'🎒',label:'背包'},
+  {c:2,r:12,type:'workers',emoji:'👷',label:'工人'},
+];
+const MAX_UPG={speed:3,bag:3,workers:5};
+const UPG_COST={speed:[40,90,180], bag:[30,70,140], workers:[60,100,150,200,260]};
+const UPG={speed:0,bag:0,workers:0};
+function maxBag(){ return 10+UPG.bag*5; }
+function upgCost(t){ const c=UPG_COST[t]; return UPG[t]<c.length?c[UPG[t]]:null; }
+function inventoryCount(){ return P.wood+P.stone+P.flowers; }
+
+// ─── WORKER AI (auto-harvests wood/stone, sells at the house) ──
+const workers=[];
+class WorkerAI{
+  constructor(c,r){
+    this.col=c; this.row=r; this.wood=0; this.stone=0;
+    this.state='idle'; this.target=null; this.harvestTimer=0;
+    this.speed=2.0; this.thinkTimer=rnd(0.5,1.5); this.frame=0; this.frameTimer=0;
+  }
+  update(dt){
+    this.frameTimer+=dt; if(this.frameTimer>0.18){this.frame=(this.frame+1)%4;this.frameTimer=0;}
+    this.thinkTimer-=dt;
+    const cap=6;
+    if(this.wood+this.stone>=cap) this.state='move-sell';
+    if(this.state==='idle'&&this.thinkTimer<0){
+      this.thinkTimer=rnd(1.5,3);
+      let best=null,bestD=Infinity;
+      for(const t of trees) if(!t.dead){const d=gdist(this.col,this.row,t.c,t.r);if(d<bestD){bestD=d;best={obj:t,type:'tree'};}}
+      for(const rk of rocks) if(!rk.dead){const d=gdist(this.col,this.row,rk.c,rk.r);if(d<bestD){bestD=d;best={obj:rk,type:'rock'};}}
+      if(best){this.target=best;this.state='move-harvest';}
+    }
+    if(this.state==='move-harvest'&&this.target){
+      if(this.target.obj.dead){this.target=null;this.state='idle';this.thinkTimer=0;return;}
+      const{c:tc,r:tr}=this.target.obj, d=gdist(this.col,this.row,tc,tr);
+      if(d<0.7)this.state='harvest';
+      else{
+        const spd=this.speed*(typeof catOwned==='function'&&catOwned()?1.3:1);
+        this.col+=(tc-this.col)/d*spd*dt; this.row+=(tr-this.row)/d*spd*dt;
+      }
+    }
+    if(this.state==='harvest'&&this.target){
+      if(this.target.obj.dead){this.target=null;this.state='idle';this.thinkTimer=0;return;}
+      this.harvestTimer+=dt;
+      if(this.harvestTimer>=0.9){
+        this.harvestTimer=0;
+        const obj=this.target.obj,type=this.target.type;
+        obj.hp--;obj.shake=0.4;
+        if(type==='tree'){this.wood++;spawnParticle(obj.c,obj.r,'🪵','#CD853F');sfxChop();}
+        else{this.stone++;spawnParticle(obj.c,obj.r,'🪨','#bbb');sfxMine();}
+        if(obj.hp<=0){obj.dead=true;obj.regrow=type==='tree'?TREE_REGROW:ROCK_REGROW;this.target=null;this.state='idle';this.thinkTimer=0;}
+      }
+    }
+    if(this.state==='move-sell'){
+      const d=gdist(this.col,this.row,HOUSE_C,HOUSE_R);
+      if(d<1.3){
+        // contribute toward an active house-upgrade deposit first, same as the player does
+        if(gamePhase===1&&HSTATE.level===1){
+          const dW=Math.min(this.wood,Math.max(0,HOUSE_UPGRADE_COST.wood-HSTATE.woodDep));
+          const dS=Math.min(this.stone,Math.max(0,HOUSE_UPGRADE_COST.stone-HSTATE.stoneDep));
+          if(dW>0){this.wood-=dW;HSTATE.woodDep+=dW;}
+          if(dS>0){this.stone-=dS;HSTATE.stoneDep+=dS;}
+        }else if(gamePhase===2&&HSTATE.level===2){
+          const dW=Math.min(this.wood,Math.max(0,HOUSE_UPGRADE2_COST.wood-HSTATE.woodDep2));
+          const dS=Math.min(this.stone,Math.max(0,HOUSE_UPGRADE2_COST.stone-HSTATE.stoneDep2));
+          if(dW>0){this.wood-=dW;HSTATE.woodDep2+=dW;}
+          if(dS>0){this.stone-=dS;HSTATE.stoneDep2+=dS;}
+        }
+        const earned=this.wood*WOOD_PRICE+this.stone*STONE_PRICE;
+        if(earned>0){P.gold+=earned;spawnParticle(this.col,this.row,`+${earned}🪙`,'#FFD700');sfxSell();}
+        this.wood=0;this.stone=0;this.state='idle';this.thinkTimer=rnd(1,2);
+      }else{this.col+=(HOUSE_C-this.col)/d*this.speed*dt;this.row+=(HOUSE_R-this.row)/d*this.speed*dt;}
+    }
+  }
+}
+
+// ─── HOUSE UPGRADE (unlocks the garden) ────────
+const HOUSE_UPGRADE_COST={wood:25,stone:20,gold:50};
+const HSTATE={
+  level:1,playerNear:false,upgrading:false,upgradeTimer:0,woodDep:0,stoneDep:0,goldDep:0,
+  playerNear2:false,upgrading2:false,upgradeTimer2:0,woodDep2:0,stoneDep2:0,goldDep2:0,flowersDep2:0,
+};
+const HOUSE_UPGRADE2_COST={wood:40,stone:30,gold:100,flowers:15};
+
+// ─── FLOWER STAND (V3) ──────────────────────────
+const FSTAND_BUILD={wood:10,stone:5};
+const FSTAND_SELL=25;
+const FSTAND={c:12,r:17,level:0,building:false,buildTimer:0,woodDep:0,stoneDep:0,playerNear:false,inventory:0};
+
+const standCustomers=[];
+let customerSpawnTimer=6;
+const CUSTOMER_EMOJIS=['👦','👧','👨','👩','🧑','👴','👵'];
+function updateStandCustomers(dt){
+  if(gamePhase<3||FSTAND.level===0)return;
+  customerSpawnTimer-=dt;
+  if(customerSpawnTimer<=0&&standCustomers.length<3){
+    customerSpawnTimer=7+Math.random()*7;
+    const idx=standCustomers.length;
+    standCustomers.push({
+      col:FSTAND.c+2.3+Math.random()*1.2, row:FSTAND.r+(Math.random()-0.5)*1.4,
+      tc:FSTAND.c+0.9+idx*0.4, tr:FSTAND.r+0.9,
+      state:'approaching', want:1+Math.floor(Math.random()*3),
+      waitTimer:18+Math.random()*8, happyTimer:0,
+      emoji:CUSTOMER_EMOJIS[Math.floor(Math.random()*CUSTOMER_EMOJIS.length)],
+    });
+  }
+  for(let i=standCustomers.length-1;i>=0;i--){
+    const c=standCustomers[i];
+    if(c.state==='approaching'){
+      const d=gdist(c.col,c.row,c.tc,c.tr);
+      if(d>0.15){c.col+=(c.tc-c.col)/d*1.3*dt;c.row+=(c.tr-c.row)/d*1.3*dt;}
+      else c.state='waiting';
+    }else if(c.state==='waiting'){
+      if(FSTAND.inventory>=c.want){
+        FSTAND.inventory-=c.want;
+        const earned=c.want*FSTAND_SELL;
+        P.gold+=earned;
+        spawnParticle(c.col,c.row,`+${earned}🪙`,'#FFD700');sfxSell();
+        c.state='happy';c.happyTimer=1.5;
+      }else{
+        c.waitTimer-=dt;
+        if(c.waitTimer<=0)c.state='leaving';
+      }
+    }else if(c.state==='happy'){
+      c.happyTimer-=dt;
+      if(c.happyTimer<=0)c.state='leaving';
+    }else if(c.state==='leaving'){
+      c.col+=0.9*dt; c.row-=0.2*dt;
+      if(gdist(c.col,c.row,c.tc,c.tr)>4) standCustomers.splice(i,1);
+    }
+  }
+}
+
+// ─── PETS (V3) — buy once, passive buffs ───────
+const petShops=[
+  {id:'dog', c:15,r:17,emoji:'🐕',name:'旺財',cost:60, desc:'採集範圍+50%',owned:false,buyTimer:0},
+  {id:'cat', c:17,r:17,emoji:'🐱',name:'咪咪',cost:80, desc:'工人速度+30%',owned:false,buyTimer:0},
+  {id:'bird',c:19,r:17,emoji:'🐦',name:'小鳥',cost:100,desc:'生長速度+20%',owned:false,buyTimer:0},
+];
+function dogOwned(){ return gamePhase>=3&&petShops[0].owned; }
+function catOwned(){ return gamePhase>=3&&petShops[1].owned; }
+function birdOwned(){ return gamePhase>=3&&petShops[2].owned; }
+function harvestRangeEff(){ return HARVEST_RANGE*(dogOwned()?1.5:1); }
+function regrowMult(){ return birdOwned()?1.2:1; }
+
+// ─── SEED SHOP + FLOWER WORKER SHOP (garden zone) ──
+const SEED_SHOP={c:13,r:14,emoji:'🌱',label:'種子'};
+const FW_SHOP={c:18,r:14,emoji:'👩‍🌾',label:'花農'};
+
+const flowerWorkers=[];
+class FlowerWorkerAI{
+  constructor(c,r){
+    this.col=c;this.row=r;this.flowers=0;
+    this.state='idle';this.target=null;this.harvestTimer=0;this.plantTimer=0;
+    this.speed=1.9;this.thinkTimer=rnd(0.3,1.2);this.frame=0;this.frameTimer=0;
+  }
+  update(dt){
+    this.frameTimer+=dt; if(this.frameTimer>0.18){this.frame=(this.frame+1)%4;this.frameTimer=0;}
+    this.thinkTimer-=dt;
+    const cap=4;
+    if(this.flowers>=cap) this.state='move-sell';
+    if(this.state==='idle'&&this.thinkTimer<0){
+      this.thinkTimer=rnd(1.2,2.5);
+      if(this.flowers<cap){
+        let best=null,bestD=Infinity;
+        for(const tu of tulips) if(tu.state==='ready'){const d=gdist(this.col,this.row,tu.c,tu.r);if(d<bestD){bestD=d;best=tu;}}
+        if(best){this.target=best;this.state='move-harvest';return;}
+        const empties=tulips.filter(tu=>tu.state==='empty');
+        if(empties.length>0){
+          if(P_seeds>0){this.target=empties[0];this.state='move-plant';return;}
+          else if(P.gold>=SEED_PRICE*SEEDS_PER_BUY){this.state='move-buy-seeds';return;}
+        }
+      }else this.state='move-sell';
+    }
+    if(this.state==='move-harvest'&&this.target){
+      if(this.target.state!=='ready'){this.target=null;this.state='idle';this.thinkTimer=0;return;}
+      const d=gdist(this.col,this.row,this.target.c,this.target.r);
+      if(d<0.6)this.state='harvest';
+      else{const spd=this.speed*(catOwned()?1.3:1);this.col+=(this.target.c-this.col)/d*spd*dt;this.row+=(this.target.r-this.row)/d*spd*dt;}
+    }
+    if(this.state==='harvest'&&this.target){
+      if(this.target.state!=='ready'){this.target=null;this.state='idle';return;}
+      this.harvestTimer+=dt;
+      if(this.harvestTimer>=0.6){
+        this.harvestTimer=0;
+        this.flowers++; this.target.state='empty';
+        spawnParticle(this.target.c,this.target.r,'+🌷','#FF69B4'); sfxBloom();
+        this.target=null;this.state='idle';this.thinkTimer=0;
+      }
+    }
+    if(this.state==='move-buy-seeds'){
+      const d=gdist(this.col,this.row,SEED_SHOP.c,SEED_SHOP.r);
+      if(d<1.0){
+        if(P.gold>=SEED_PRICE*SEEDS_PER_BUY){
+          P.gold-=SEED_PRICE*SEEDS_PER_BUY;P_seeds+=SEEDS_PER_BUY;
+          spawnParticle(SEED_SHOP.c,SEED_SHOP.r,`🌱×${SEEDS_PER_BUY}`,'#90EE90');sfxSell();
+        }
+        const empties=tulips.filter(tu=>tu.state==='empty');
+        if(empties.length>0&&P_seeds>0){this.target=empties[0];this.state='move-plant';}
+        else{this.state='idle';this.thinkTimer=rnd(1,2);}
+      }else{const spd=this.speed*(catOwned()?1.3:1);this.col+=(SEED_SHOP.c-this.col)/d*spd*dt;this.row+=(SEED_SHOP.r-this.row)/d*spd*dt;}
+    }
+    if(this.state==='move-plant'&&this.target){
+      if(this.target.state!=='empty'){
+        const empties=tulips.filter(tu=>tu.state==='empty');
+        if(empties.length>0&&P_seeds>0){this.target=empties[0];}
+        else{this.state='idle';this.thinkTimer=rnd(1,2);return;}
+      }
+      const d=gdist(this.col,this.row,this.target.c,this.target.r);
+      if(d<0.6){this.state='plant';this.plantTimer=0;}
+      else{const spd=this.speed*(catOwned()?1.3:1);this.col+=(this.target.c-this.col)/d*spd*dt;this.row+=(this.target.r-this.row)/d*spd*dt;}
+    }
+    if(this.state==='plant'&&this.target){
+      if(this.target.state!=='empty'){this.state='idle';this.thinkTimer=0;return;}
+      this.plantTimer+=dt;
+      if(this.plantTimer>=0.9){
+        if(P_seeds>0){
+          this.target.state='growing';this.target.growTimer=0;P_seeds--;
+          spawnParticle(this.target.c,this.target.r,'🌱','#90EE90');sfxSell();
+        }
+        const empties=tulips.filter(tu=>tu.state==='empty');
+        if(empties.length>0&&P_seeds>0){this.target=empties[0];this.state='move-plant';}
+        else if(empties.length>0&&P.gold>=SEED_PRICE*SEEDS_PER_BUY){this.state='move-buy-seeds';this.target=null;}
+        else{this.state='idle';this.thinkTimer=rnd(1,2);}
+      }
+    }
+    if(this.state==='move-sell'){
+      const useStand=typeof FSTAND!=='undefined'&&gamePhase>=3&&FSTAND.level>0;
+      const tc=useStand?FSTAND.c:HOUSE_C, tr=useStand?FSTAND.r:HOUSE_R;
+      const d=gdist(this.col,this.row,tc,tr);
+      if(d<1.3){
+        if(useStand){
+          if(this.flowers>0){FSTAND.inventory+=this.flowers;spawnParticle(tc,tr,`+${this.flowers}🌸`,'#FF69B4');sfxSell();this.flowers=0;}
+        }else{
+          const earned=this.flowers*FLOWER_PRICE;
+          if(earned>0){P.gold+=earned;spawnParticle(this.col,this.row,`+${earned}🪙`,'#FFD700');sfxSell();}
+          this.flowers=0;
+        }
+        this.state='idle';this.thinkTimer=rnd(1,2);
+      }else{this.col+=(tc-this.col)/d*this.speed*dt;this.row+=(tr-this.row)/d*this.speed*dt;}
+    }
+  }
+}
+
+// ─── PARTICLES ────────────────────────────────
+const parts=[];
+function spawnParticle(c,r,text,color){
+  const p=isoPos(c,r);
+  parts.push({x:p.x,y:p.y-26,text,color:color||'#fff',vy:-46,life:1.3,max:1.3});
+}
+function updateParticles(dt){
+  for(let i=parts.length-1;i>=0;i--){
+    const p=parts[i]; p.y+=p.vy*dt; p.life-=dt;
+    if(p.life<=0)parts.splice(i,1);
+  }
+}
+function drawParticles(){
+  ctx.font=`bold 13px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='middle';
+  for(const p of parts){
+    ctx.globalAlpha=clamp(p.life/p.max,0,1);
+    ctx.fillStyle=p.color;ctx.fillText(p.text,p.x,p.y);
+  }
+  ctx.globalAlpha=1;
+}
+
+// ─── PLAYER ───────────────────────────────────
+const P={
+  col:HOUSE_C+1, row:HOUSE_R+1, wood:0, stone:0, flowers:0, gold:0,
+  harvestTarget:null, harvestType:null, harvestTimer:0,
+  moving:false, frame:0, frameTimer:0, facing:1,
+  buyTarget:null, buyTimer:0, alertedFull:false,
+  plantTarget:null, plantTimer:0, seedBuyTimer:0, fwBuyTimer:0, alertedNoSeeds:false,
+};
+
+// ─── INPUT ────────────────────────────────────
+const keys={};
+window.addEventListener('keydown',e=>{keys[e.key]=true;if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key))e.preventDefault();});
+window.addEventListener('keyup',e=>{keys[e.key]=false;});
+
+const JOY={active:false,pid:-1,bx:70,by:0,r:48,kr:21,kx:0,ky:0};
+let tapTouch=null;
+function ptrPos(e){const r=canvas.getBoundingClientRect();return{lx:(e.clientX-r.left)/S,ly:(e.clientY-r.top)/S};}
+function inJoyZone(lx,ly){return lx<150&&ly>VH-140;}
+canvas.addEventListener('pointerdown',e=>{
+  initAudio();const{lx,ly}=ptrPos(e);
+  if(!JOY.active&&inJoyZone(lx,ly)){JOY.active=true;JOY.pid=e.pointerId;JOY.kx=clamp(lx-JOY.bx,-JOY.r,JOY.r);JOY.ky=clamp(ly-JOY.by,-JOY.r,JOY.r);canvas.setPointerCapture(e.pointerId);}
+  else if(e.pointerId!==JOY.pid){tapTouch={wx:cam.x+lx,wy:cam.y+ly};}
+});
+canvas.addEventListener('pointermove',e=>{
+  const{lx,ly}=ptrPos(e);
+  if(JOY.active&&e.pointerId===JOY.pid){JOY.kx=clamp(lx-JOY.bx,-JOY.r,JOY.r);JOY.ky=clamp(ly-JOY.by,-JOY.r,JOY.r);}
+  else if(e.buttons&&e.pointerId!==JOY.pid){tapTouch={wx:cam.x+lx,wy:cam.y+ly};}
+});
+canvas.addEventListener('pointerup',e=>{if(JOY.active&&e.pointerId===JOY.pid){JOY.active=false;JOY.pid=-1;JOY.kx=0;JOY.ky=0;}else tapTouch=null;});
+canvas.addEventListener('pointercancel',e=>{if(JOY.active&&e.pointerId===JOY.pid){JOY.active=false;JOY.pid=-1;JOY.kx=0;JOY.ky=0;}else tapTouch=null;});
+
+// screen-space direction -> grid-space direction (unit vector)
+function screenDirToGrid(dx,dy){
+  const len=Math.hypot(dx,dy);
+  if(len<1e-6) return {dc:0,dr:0};
+  dx/=len; dy/=len;
+  let dc=dx/(2*A)+dy/(2*B), dr=dy/(2*B)-dx/(2*A);
+  const glen=Math.hypot(dc,dr);
+  if(glen<1e-6) return {dc:0,dr:0};
+  return {dc:dc/glen,dr:dr/glen};
+}
+
+// ─── GAME LOOP ────────────────────────────────
+let lastT=0;
+function loop(ts){
+  requestAnimationFrame(loop);
+  const dt=Math.min((ts-lastT)/1000,0.05);
+  lastT=ts; update(dt); render();
+}
+
+// ─── UPDATE ───────────────────────────────────
+function update(dt){
+  let dx=0,dy=0;
+  if(keys['ArrowLeft']||keys['a']||keys['A'])dx-=1;
+  if(keys['ArrowRight']||keys['d']||keys['D'])dx+=1;
+  if(keys['ArrowUp']||keys['w']||keys['W'])dy-=1;
+  if(keys['ArrowDown']||keys['s']||keys['S'])dy+=1;
+  if(JOY.active){const jd=Math.hypot(JOY.kx,JOY.ky);if(jd>5){dx=JOY.kx/JOY.r;dy=JOY.ky/JOY.r;}}
+  else if(tapTouch){
+    const pw=isoWorld(P.col,P.row);
+    const tdx=tapTouch.wx-pw.x, tdy=tapTouch.wy-pw.y, td=Math.hypot(tdx,tdy);
+    if(td>10){dx=tdx;dy=tdy;} else tapTouch=null;
+  }
+  const {dc,dr}=screenDirToGrid(dx,dy);
+  P.moving = dc!==0||dr!==0;
+  if(dx>0.15) P.facing=1; else if(dx<-0.15) P.facing=-1;
+  const spd=playerSpeed();
+  const nc=clamp(P.col+dc*spd*dt, 0.3, WCOLS-1.3);
+  const nr=clamp(P.row+dr*spd*dt, 0.3, WROWS-1.3);
+  if(!nearFence(nc,P.row)) P.col=nc;
+  if(!nearFence(P.col,nr)) P.row=nr;
+  if(P.moving){P.frameTimer+=dt;if(P.frameTimer>0.13){P.frame=(P.frame+1)%4;P.frameTimer=0;}}
+
+  // camera follows the player, clamped to world bounds (centered if world < viewport)
+  const pw2=isoWorld(P.col,P.row);
+  const camTX = WORLD_W<=VW ? (WORLD_W-VW)/2 : clamp(pw2.x-VW/2,0,WORLD_W-VW);
+  const camTY = WORLD_H<=VH ? (WORLD_H-VH)/2 : clamp(pw2.y-VH/2,0,WORLD_H-VH);
+  cam.x+=(camTX-cam.x)*0.12; cam.y+=(camTY-cam.y)*0.12;
+
+  // world regrowth (bird pet speeds this up)
+  const rgm=regrowMult();
+  for(const t of trees){ if(t.dead){ t.regrow-=dt*rgm; if(t.regrow<=0){t.dead=false;t.hp=t.maxHp;} } if(t.shake>0)t.shake-=dt; }
+  for(const r of rocks){ if(r.dead){ r.regrow-=dt*rgm; if(r.regrow<=0){r.dead=false;r.hp=r.maxHp;} } if(r.shake>0)r.shake-=dt; }
+  for(const tu of tulips){ if(tu.state==='growing'){ tu.growTimer+=dt*rgm; if(tu.growTimer>=FLOWER_GROW){tu.state='ready';} } }
+
+  // harvesting (nearest ready resource in range) — gated by backpack capacity
+  if(inventoryCount()<maxBag()){
+    let nearest=null, nd=harvestRangeEff();
+    for(const t of trees) if(!t.dead){const d=gdist(P.col,P.row,t.c,t.r);if(d<nd){nd=d;nearest={obj:t,type:'tree'};}}
+    for(const r of rocks) if(!r.dead){const d=gdist(P.col,P.row,r.c,r.r);if(d<nd){nd=d;nearest={obj:r,type:'rock'};}}
+    if(gamePhase>=2) for(const tu of tulips) if(tu.state==='ready'){const d=gdist(P.col,P.row,tu.c,tu.r);if(d<nd){nd=d;nearest={obj:tu,type:'tulip'};}}
+    if(nearest){
+      if(P.harvestTarget!==nearest.obj){P.harvestTarget=nearest.obj;P.harvestTimer=0;}
+      P.harvestType=nearest.type;
+      if(nearest.obj.c<P.col-0.05) P.facing=-1; else if(nearest.obj.c>P.col+0.05) P.facing=1;
+      P.harvestTimer+=dt;
+      if(P.harvestTimer>=HARVEST_TIME){
+        P.harvestTimer=0;
+        const obj=nearest.obj;
+        if(nearest.type==='tree'){
+          obj.hp--;obj.shake=0.4;P.wood++;
+          spawnParticle(obj.c,obj.r,'+🪵','#CD853F');sfxChop();
+          if(obj.hp<=0){obj.dead=true;obj.regrow=TREE_REGROW;P.harvestTarget=null;}
+        }else if(nearest.type==='rock'){
+          obj.hp--;obj.shake=0.4;P.stone++;
+          spawnParticle(obj.c,obj.r,'+🪨','#bbb');sfxMine();
+          if(obj.hp<=0){obj.dead=true;obj.regrow=ROCK_REGROW;P.harvestTarget=null;}
+        }else{
+          obj.state='empty';P.flowers++;
+          spawnParticle(obj.c,obj.r,'+🌷','#FF69B4');sfxBloom();
+          P.harvestTarget=null;
+        }
+      }
+    }else{P.harvestTarget=null;P.harvestTimer=0;}
+    P.alertedFull=false;
+  }else{
+    P.harvestTarget=null;P.harvestTimer=0;
+    if(!P.alertedFull){P.alertedFull=true;spawnParticle(P.col,P.row,'背包滿了！去賣吧','#F39C12');}
+  }
+
+  // planting seeds into empty patches (once the garden is unlocked)
+  if(gamePhase>=2){
+    let nearestEmpty=null, ned=harvestRangeEff();
+    for(const tu of tulips) if(tu.state==='empty'){const d=gdist(P.col,P.row,tu.c,tu.r);if(d<ned){ned=d;nearestEmpty=tu;}}
+    if(nearestEmpty&&P_seeds>0){
+      if(P.plantTarget!==nearestEmpty){P.plantTarget=nearestEmpty;P.plantTimer=0;}
+      P.plantTimer+=dt;
+      if(P.plantTimer>=PLANT_TIME){
+        P.plantTimer=0;P_seeds--;nearestEmpty.state='growing';nearestEmpty.growTimer=0;
+        spawnParticle(nearestEmpty.c,nearestEmpty.r,'🌱','#90EE90');sfxSell();
+        P.plantTarget=null;
+      }
+      P.alertedNoSeeds=false;
+    }else{
+      P.plantTarget=null;P.plantTimer=0;
+      if(nearestEmpty&&P_seeds<=0){
+        if(!P.alertedNoSeeds){P.alertedNoSeeds=true;spawnParticle(P.col,P.row,'沒有種子了！去買一些吧','#90EE90');}
+      }else P.alertedNoSeeds=false;
+    }
+  }else{P.plantTarget=null;P.plantTimer=0;}
+
+  // house upgrade -> unlocks the garden (only once shops are maxed).
+  // Runs before the generic sell-at-house block so deposits get first claim
+  // on carried wood/stone; whatever's left over still gets sold as usual.
+  if(gamePhase===1&&HSTATE.level===1){
+    const hnear=gdist(P.col,P.row,HOUSE_C,HOUSE_R)<SELL_RANGE;
+    if(hnear){
+      if(!HSTATE.playerNear){
+        HSTATE.playerNear=true;
+        const needW=Math.max(0,HOUSE_UPGRADE_COST.wood-HSTATE.woodDep);
+        const needS=Math.max(0,HOUSE_UPGRADE_COST.stone-HSTATE.stoneDep);
+        const needG=Math.max(0,HOUSE_UPGRADE_COST.gold-HSTATE.goldDep);
+        const dW=Math.min(P.wood,needW), dS=Math.min(P.stone,needS), dG=Math.min(P.gold,needG);
+        if(dW>0){P.wood-=dW;HSTATE.woodDep+=dW;spawnParticle(HOUSE_C,HOUSE_R,`投入🪵×${dW}`,'#CD853F');}
+        if(dS>0){P.stone-=dS;HSTATE.stoneDep+=dS;spawnParticle(HOUSE_C,HOUSE_R,`投入🪨×${dS}`,'#bbb');}
+        if(dG>0){P.gold-=dG;HSTATE.goldDep+=dG;spawnParticle(HOUSE_C,HOUSE_R,`投入🪙×${dG}`,'#FFD700');}
+      }
+      const funded=HSTATE.woodDep>=HOUSE_UPGRADE_COST.wood&&HSTATE.stoneDep>=HOUSE_UPGRADE_COST.stone&&HSTATE.goldDep>=HOUSE_UPGRADE_COST.gold;
+      if(funded){
+        HSTATE.upgrading=true;HSTATE.upgradeTimer+=dt;
+        if(HSTATE.upgradeTimer>=3){
+          HSTATE.level=2;HSTATE.upgrading=false;HSTATE.upgradeTimer=0;
+          gamePhase=2;unlockGarden();
+          spawnParticle(HOUSE_C,HOUSE_R,'🏡 花園開放了！','#FFD700');sfxSell();
+        }
+      }else HSTATE.upgrading=false;
+    }else{HSTATE.playerNear=false;if(!HSTATE.upgrading)HSTATE.upgradeTimer=0;}
+  }
+
+  // second house upgrade -> unlocks the flower stand + pets
+  if(gamePhase===2&&HSTATE.level===2){
+    const hnear=gdist(P.col,P.row,HOUSE_C,HOUSE_R)<SELL_RANGE;
+    const c2=HOUSE_UPGRADE2_COST;
+    if(hnear){
+      if(!HSTATE.playerNear2){
+        HSTATE.playerNear2=true;
+        const needW=Math.max(0,c2.wood-HSTATE.woodDep2), needS=Math.max(0,c2.stone-HSTATE.stoneDep2);
+        const needG=Math.max(0,c2.gold-HSTATE.goldDep2), needF=Math.max(0,c2.flowers-HSTATE.flowersDep2);
+        const dW=Math.min(P.wood,needW), dS=Math.min(P.stone,needS), dG=Math.min(P.gold,needG), dF=Math.min(P.flowers,needF);
+        if(dW>0){P.wood-=dW;HSTATE.woodDep2+=dW;spawnParticle(HOUSE_C,HOUSE_R,`投入🪵×${dW}`,'#CD853F');}
+        if(dS>0){P.stone-=dS;HSTATE.stoneDep2+=dS;spawnParticle(HOUSE_C,HOUSE_R,`投入🪨×${dS}`,'#bbb');}
+        if(dG>0){P.gold-=dG;HSTATE.goldDep2+=dG;spawnParticle(HOUSE_C,HOUSE_R,`投入🪙×${dG}`,'#FFD700');}
+        if(dF>0){P.flowers-=dF;HSTATE.flowersDep2+=dF;spawnParticle(HOUSE_C,HOUSE_R,`投入🌷×${dF}`,'#FF69B4');}
+      }
+      const funded2=HSTATE.woodDep2>=c2.wood&&HSTATE.stoneDep2>=c2.stone&&HSTATE.goldDep2>=c2.gold&&HSTATE.flowersDep2>=c2.flowers;
+      if(funded2){
+        HSTATE.upgrading2=true;HSTATE.upgradeTimer2+=dt;
+        if(HSTATE.upgradeTimer2>=3.5){
+          HSTATE.level=3;HSTATE.upgrading2=false;HSTATE.upgradeTimer2=0;
+          gamePhase=3;
+          spawnParticle(HOUSE_C,HOUSE_R,'🏘️ 花攤與寵物解鎖！','#FFD700');sfxSell();
+        }
+      }else HSTATE.upgrading2=false;
+    }else{HSTATE.playerNear2=false;if(!HSTATE.upgrading2)HSTATE.upgradeTimer2=0;}
+  }
+
+  // sell at house (whatever wasn't just claimed by the upgrade deposit above)
+  if(gdist(P.col,P.row,HOUSE_C,HOUSE_R)<SELL_RANGE && (P.wood>0||P.stone>0||P.flowers>0)){
+    const earned=P.wood*WOOD_PRICE+P.stone*STONE_PRICE+P.flowers*FLOWER_PRICE;
+    P.gold+=earned;
+    spawnParticle(HOUSE_C,HOUSE_R,`+${earned}🪙`,'#FFD700');sfxSell();
+    P.wood=0;P.stone=0;P.flowers=0;
+  }
+
+  // seed shop
+  if(gamePhase>=2){
+    const nearSeed=gdist(P.col,P.row,SEED_SHOP.c,SEED_SHOP.r)<1.15;
+    if(nearSeed&&P.gold>=SEED_PRICE*SEEDS_PER_BUY){
+      P.seedBuyTimer+=dt;
+      if(P.seedBuyTimer>=BUY_TIME){
+        P.gold-=SEED_PRICE*SEEDS_PER_BUY;P_seeds+=SEEDS_PER_BUY;P.seedBuyTimer=0;
+        spawnParticle(SEED_SHOP.c,SEED_SHOP.r,`🌱×${SEEDS_PER_BUY}`,'#90EE90');sfxSell();
+      }
+    }else P.seedBuyTimer=0;
+
+    const nearFW=gdist(P.col,P.row,FW_SHOP.c,FW_SHOP.r)<1.15;
+    if(nearFW&&flowerWorkers.length<MAX_FLOWER_WORKERS&&P.gold>=FW_COST){
+      P.fwBuyTimer+=dt;
+      if(P.fwBuyTimer>=BUY_TIME){
+        P.gold-=FW_COST;flowerWorkers.push(new FlowerWorkerAI(FW_SHOP.c,FW_SHOP.r+1));P.fwBuyTimer=0;
+        spawnParticle(FW_SHOP.c,FW_SHOP.r,'👩‍🌾 花農僱用！','#FF69B4');sfxSell();
+      }
+    }else P.fwBuyTimer=0;
+
+    for(const fw of flowerWorkers) fw.update(dt);
+  }
+
+  // upgrade shops
+  let nearShop=null;
+  for(const s of SHOPS) if(gdist(P.col,P.row,s.c,s.r)<1.15){nearShop=s;break;}
+  if(nearShop){
+    const cost=upgCost(nearShop.type);
+    if(cost!==null&&P.gold>=cost){
+      if(P.buyTarget===nearShop)P.buyTimer+=dt; else{P.buyTarget=nearShop;P.buyTimer=0;}
+      if(P.buyTimer>=BUY_TIME){
+        P.gold-=cost;UPG[nearShop.type]++;
+        if(nearShop.type==='workers')workers.push(new WorkerAI(nearShop.c,nearShop.r+1));
+        spawnParticle(nearShop.c,nearShop.r,`${nearShop.emoji} ${nearShop.label}升級！`,'#00FF88');
+        sfxSell();P.buyTimer=0;P.buyTarget=null;
+      }
+    }else{P.buyTarget=null;P.buyTimer=0;}
+  }else{P.buyTarget=null;P.buyTimer=0;}
+
+  for(const w of workers) w.update(dt);
+
+  // phase unlock: max speed+bag, hire at least 3 workers -> house becomes upgradable
+  if(gamePhase===0&&UPG.speed>=3&&UPG.bag>=3&&workers.length>=3){
+    gamePhase=1;
+    spawnParticle(HOUSE_C,HOUSE_R,'🏗️ 小屋可以升級了！','#FFD700');
+    sfxSell();
+  }
+
+  // flower stand: build once, then sell flowers here (better price + customers)
+  if(gamePhase>=3&&FSTAND.level===0){
+    const fnear=gdist(P.col,P.row,FSTAND.c,FSTAND.r)<1.15;
+    if(fnear){
+      if(!FSTAND.playerNear){
+        FSTAND.playerNear=true;
+        const needW=Math.max(0,FSTAND_BUILD.wood-FSTAND.woodDep), needS=Math.max(0,FSTAND_BUILD.stone-FSTAND.stoneDep);
+        const dW=Math.min(P.wood,needW), dS=Math.min(P.stone,needS);
+        if(dW>0){P.wood-=dW;FSTAND.woodDep+=dW;spawnParticle(FSTAND.c,FSTAND.r,`投入🪵×${dW}`,'#CD853F');}
+        if(dS>0){P.stone-=dS;FSTAND.stoneDep+=dS;spawnParticle(FSTAND.c,FSTAND.r,`投入🪨×${dS}`,'#bbb');}
+      }
+      const ffunded=FSTAND.woodDep>=FSTAND_BUILD.wood&&FSTAND.stoneDep>=FSTAND_BUILD.stone;
+      if(ffunded){
+        FSTAND.building=true;FSTAND.buildTimer+=dt;
+        if(FSTAND.buildTimer>=2.5){
+          FSTAND.level=1;FSTAND.building=false;FSTAND.buildTimer=0;
+          spawnParticle(FSTAND.c,FSTAND.r,'🌺 花攤開張！','#FF69B4');sfxSell();
+        }
+      }else FSTAND.building=false;
+    }else{FSTAND.playerNear=false;if(!FSTAND.building)FSTAND.buildTimer=0;}
+  }
+  if(gamePhase>=3&&FSTAND.level>0&&P.flowers>0&&gdist(P.col,P.row,FSTAND.c,FSTAND.r)<1.15){
+    FSTAND.inventory+=P.flowers;
+    spawnParticle(FSTAND.c,FSTAND.r,`+${P.flowers}🌸`,'#FF69B4');sfxSell();
+    P.flowers=0;
+  }
+  updateStandCustomers(dt);
+
+  // pet shops (one-time purchase, passive buffs)
+  if(gamePhase>=3){
+    for(const ps of petShops){
+      if(ps.owned)continue;
+      const pnear=gdist(P.col,P.row,ps.c,ps.r)<1.15;
+      if(pnear&&P.gold>=ps.cost){
+        ps.buyTimer+=dt;
+        if(ps.buyTimer>=BUY_TIME){
+          P.gold-=ps.cost;ps.owned=true;ps.buyTimer=0;
+          spawnParticle(ps.c,ps.r,`${ps.emoji} ${ps.name}加入！`,'#FFD700');sfxSell();
+        }
+      }else ps.buyTimer=0;
+    }
+  }
+
+  updateParticles(dt);
+  updateHUD();
+}
+
+function updateHUD(){
+  const seedSpan = gamePhase>=2 ? `<span>🌱 ${P_seeds}</span>` : '';
+  document.getElementById('hud').innerHTML=
+    `<span>🪙 ${P.gold}</span><span>🪵 ${P.wood}</span><span>🪨 ${P.stone}</span><span>🌷 ${P.flowers}</span><span>🎒 ${inventoryCount()}/${maxBag()}</span>${seedSpan}`;
+  document.getElementById('objective').textContent = currentObjective();
+}
+function currentObjective(){
+  if(gamePhase===0) return `目標：升級商店 ⚡${UPG.speed}/3 🎒${UPG.bag}/3 👷${workers.length}/3 → 小屋可升級`;
+  if(gamePhase===1) return '目標：走到小屋旁投入 🪵🪨🪙 升級';
+  if(gamePhase===2) return '目標：種花採收，再回小屋投入 🪵🪨🪙🌷 升級';
+  if(FSTAND.level===0) return '目標：走到花攤旁投入 🪵🪨 興建';
+  return '小鎮蓬勃發展中！繼續採集、種花、照顧寵物吧';
+}
+
+// ─── RENDER ───────────────────────────────────
+function groundColor(c,r){
+  if(isEntrance(c,r)) return (r+c)%2===0?'#a9713c':'#9c6836';
+  if(isPath(c,r)) return (c+r)%2===0?'#c9a06a':'#bd934f';
+  if(isFarm(c,r)){
+    if(gamePhase<2) return (c+r)%2===0?'#8a8a7a':'#7d7d6d'; // locked: duller, less inviting
+    return (c+r)%2===0?'#8a6642':'#7d5a39';
+  }
+  return (c+r)%2===0?'#6fbf4f':'#63b247';
+}
+function drawGroundTile(c,r){
+  const p=isoPos(c,r);
+  ctx.beginPath();
+  ctx.moveTo(p.x,p.y-B);ctx.lineTo(p.x+A,p.y);ctx.lineTo(p.x,p.y+B);ctx.lineTo(p.x-A,p.y);
+  ctx.closePath();
+  ctx.fillStyle=groundColor(c,r);ctx.fill();
+  ctx.strokeStyle='rgba(0,0,0,0.08)';ctx.lineWidth=1;ctx.stroke();
+  if(isFarm(c,r)&&!isPath(c,r)){
+    ctx.fillStyle='rgba(0,0,0,0.18)';
+    ctx.beginPath();ctx.arc(p.x-8,p.y+3,1.6,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.arc(p.x+7,p.y-2,1.6,0,Math.PI*2);ctx.fill();
+  }
+  if(isEntrance(c,r)){
+    ctx.strokeStyle='rgba(0,0,0,0.25)';ctx.lineWidth=1.2;
+    ctx.beginPath();ctx.moveTo(p.x-A+6,p.y-4);ctx.lineTo(p.x+A-6,p.y-4);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(p.x-A+10,p.y+5);ctx.lineTo(p.x+A-10,p.y+5);ctx.stroke();
+  }
+}
+function drawShadow(c,r,rx,ry){
+  const p=isoPos(c,r);
+  ctx.fillStyle='rgba(0,0,0,0.25)';
+  ctx.beginPath();ctx.ellipse(p.x,p.y+4,rx,ry,0,0,Math.PI*2);ctx.fill();
+}
+function drawFencePost(f){
+  drawShadow(f.c,f.r,13,4);
+  const p=isoPos(f.c,f.r);
+  ctx.fillStyle='#8fae7a';
+  roundRect(p.x-13,p.y-16,26,16,4);ctx.fill();
+  ctx.strokeStyle='#5c7a4d';ctx.lineWidth=1.3;roundRect(p.x-13,p.y-16,26,16,4);ctx.stroke();
+  ctx.fillStyle='#aecb99';roundRect(p.x-13,p.y-16,26,5,4);ctx.fill();
+}
+function drawTree(t){
+  if(t.dead)return;
+  drawShadow(t.c,t.r,16,5);
+  const p=isoPos(t.c,t.r);
+  ctx.save();ctx.translate(p.x,p.y);
+  if(t.shake>0)ctx.rotate(Math.sin(Date.now()/42)*t.shake*0.25);
+  ctx.font=`42px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='alphabetic';ctx.fillText('🌲',0,-4);
+  if(t.hp<t.maxHp)for(let i=0;i<t.maxHp;i++){
+    ctx.fillStyle=i<t.hp?'#2ecc71':'#e74c3c';
+    ctx.beginPath();ctx.arc(-10+i*10,10,3.5,0,Math.PI*2);ctx.fill();
+  }
+  ctx.restore();
+}
+function drawRock(r){
+  if(r.dead)return;
+  const pp=isoPos(r.c,r.r);
+  ctx.fillStyle='rgba(150,130,100,0.35)';
+  ctx.beginPath();ctx.ellipse(pp.x,pp.y+2,20,9,0,0,Math.PI*2);ctx.fill();
+  drawShadow(r.c,r.r,14,4.5);
+  const p=isoPos(r.c,r.r);
+  ctx.save();ctx.translate(p.x,p.y);
+  if(r.shake>0)ctx.translate(Math.sin(Date.now()/38)*r.shake*4,0);
+  ctx.font=`38px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='alphabetic';ctx.fillText('🪨',0,-2);
+  if(r.hp<r.maxHp)for(let i=0;i<r.maxHp;i++){
+    ctx.fillStyle=i<r.hp?'#e67e22':'#e74c3c';
+    ctx.beginPath();ctx.arc(-9+i*9,8,3.2,0,Math.PI*2);ctx.fill();
+  }
+  ctx.restore();
+}
+function drawTulip(tu){
+  if(gamePhase<2)return; // locked soil, nothing to draw beyond the tilled ground tile
+  const p=isoPos(tu.c,tu.r);
+  if(tu.state==='ready'){
+    const sway=Math.sin(Date.now()/500+tu.c*3+tu.r*7)*0.08;
+    ctx.save();ctx.translate(p.x,p.y-2);ctx.rotate(sway);
+    ctx.font=`22px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='alphabetic';ctx.fillText('🌷',0,0);
+    ctx.restore();
+  }else if(tu.state==='growing'){
+    const scale=0.35+0.65*(tu.growTimer/FLOWER_GROW);
+    ctx.save();ctx.translate(p.x,p.y-1);ctx.scale(scale,scale);ctx.globalAlpha=0.55+0.45*scale;
+    ctx.font=`18px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='alphabetic';ctx.fillText('🌱',0,0);
+    ctx.restore();
+  }
+  if(P.harvestTarget===tu&&P.harvestTimer>0){
+    ctx.beginPath();ctx.strokeStyle='#FFD700';ctx.lineWidth=2.5;
+    ctx.arc(p.x,p.y-8,14,-Math.PI/2,-Math.PI/2+Math.PI*2*(P.harvestTimer/HARVEST_TIME));ctx.stroke();
+  }
+  if(P.plantTarget===tu&&P.plantTimer>0){
+    ctx.beginPath();ctx.strokeStyle='#90EE90';ctx.lineWidth=2.5;
+    ctx.arc(p.x,p.y-4,10,-Math.PI/2,-Math.PI/2+Math.PI*2*(P.plantTimer/PLANT_TIME));ctx.stroke();
+  }
+}
+function drawHouse(){
+  const p=isoPos(HOUSE_C,HOUSE_R);
+  const near=gdist(P.col,P.row,HOUSE_C,HOUSE_R)<SELL_RANGE;
+  drawShadow(HOUSE_C,HOUSE_R,30,10);
+  if(near){
+    ctx.save();ctx.globalAlpha=0.35+0.15*Math.sin(Date.now()/200);
+    ctx.fillStyle='#FFD700';ctx.beginPath();ctx.ellipse(p.x,p.y+3,32,12,0,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  }
+  const houseEmoji = HSTATE.level>=3?'🏰':HSTATE.level>=2?'🏡':'🏠';
+  ctx.font=`58px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='alphabetic';ctx.fillText(houseEmoji,p.x,p.y-6);
+  ctx.font='bold 11px sans-serif';ctx.fillStyle='#2d5a2d';ctx.textAlign='center';
+  ctx.shadowColor='#fff';ctx.shadowBlur=3;
+  if(gamePhase===1&&HSTATE.level===1){
+    const c=HOUSE_UPGRADE_COST;
+    fillTextClamped(HSTATE.upgrading?`升級中… ${HSTATE.upgradeTimer.toFixed(1)}/3.0s`:
+      `升級：🪵${HSTATE.woodDep}/${c.wood} 🪨${HSTATE.stoneDep}/${c.stone} 🪙${HSTATE.goldDep}/${c.gold}`,p.x,p.y-70);
+  }else if(gamePhase===2&&HSTATE.level===2){
+    const c=HOUSE_UPGRADE2_COST;
+    fillTextClamped(HSTATE.upgrading2?`升級中… ${HSTATE.upgradeTimer2.toFixed(1)}/3.5s`:
+      `升級：🪵${HSTATE.woodDep2}/${c.wood} 🪨${HSTATE.stoneDep2}/${c.stone} 🪙${HSTATE.goldDep2}/${c.gold} 🌷${HSTATE.flowersDep2}/${c.flowers}`,p.x,p.y-70);
+  }else{
+    ctx.fillText('小屋 (自動賣出)',p.x,p.y-70);
+  }
+  ctx.shadowBlur=0;
+}
+function drawShopStall(s){
+  drawShadow(s.c,s.r,17,5.5);
+  const p=isoPos(s.c,s.r);
+  const cost=upgCost(s.type), canBuy=cost!==null&&P.gold>=cost, maxed=cost===null;
+  const w=46,h=40;
+  ctx.fillStyle=maxed?'#8a8a8a':(canBuy?'#3fa85c':'#6b7f6f');
+  roundRect(p.x-w/2,p.y-h,w,h,8);ctx.fill();
+  ctx.strokeStyle=maxed?'#666':'#2d5a2d';ctx.lineWidth=2;roundRect(p.x-w/2,p.y-h,w,h,8);ctx.stroke();
+  ctx.font=`24px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(s.emoji,p.x,p.y-h+15);
+  ctx.font='bold 9px sans-serif';ctx.fillStyle='#fff';ctx.fillText(s.label,p.x,p.y-h+29);
+  ctx.font='9px sans-serif';ctx.fillStyle=maxed?'#FFD700':(canBuy?'#FFD700':'#eee');
+  ctx.fillText(maxed?'MAX':`${cost}🪙`,p.x,p.y-6);
+  const lvl=UPG[s.type], maxL=MAX_UPG[s.type];
+  for(let i=0;i<maxL;i++){
+    ctx.fillStyle=i<lvl?'#FFD700':'rgba(255,255,255,0.35)';
+    ctx.beginPath();ctx.arc(p.x-w/2+8+i*((w-16)/Math.max(1,maxL-1)),p.y-h+4,2.4,0,Math.PI*2);ctx.fill();
+  }
+  if(P.buyTarget===s&&canBuy){
+    const prog=P.buyTimer/BUY_TIME;
+    ctx.fillStyle='rgba(255,215,0,0.3)';roundRect(p.x-w/2+3,p.y-11,w-6,4,2);ctx.fill();
+    ctx.fillStyle='#FFD700';roundRect(p.x-w/2+3,p.y-11,(w-6)*prog,4,2);ctx.fill();
+  }
+}
+function drawWorkerSprite(w){
+  const p=isoPos(w.col,w.row);
+  const bob=Math.sin(w.frame*Math.PI/2)*1.5;
+  drawShadow(w.col,w.row,10,3.5);
+  ctx.font=`22px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText('👷',p.x,p.y-10+bob);
+  const carried=[];
+  if(w.wood>0)carried.push({emoji:'🪵',count:w.wood,color:'#CD853F'});
+  if(w.stone>0)carried.push({emoji:'🪨',count:w.stone,color:'#bbb'});
+  drawCarriedItems(p.x,p.y-30+bob,carried);
+}
+function drawFlowerWorkerSprite(fw){
+  const p=isoPos(fw.col,fw.row);
+  const bob=Math.sin(fw.frame*Math.PI/2)*1.5;
+  drawShadow(fw.col,fw.row,10,3.5);
+  ctx.beginPath();ctx.arc(p.x,p.y-9+bob,11,0,Math.PI*2);
+  ctx.fillStyle='#c0426a';ctx.fill();ctx.strokeStyle='#FFB6C1';ctx.lineWidth=1.6;ctx.stroke();
+  ctx.font=`19px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText('👩‍🌾',p.x,p.y-9+bob);
+  const carried=fw.flowers>0?[{emoji:'🌷',count:fw.flowers,color:'#FF69B4'}]:[];
+  drawCarriedItems(p.x,p.y-29+bob,carried);
+}
+function drawSeedShop(){
+  if(gamePhase<2)return;
+  drawShadow(SEED_SHOP.c,SEED_SHOP.r,17,5.5);
+  const p=isoPos(SEED_SHOP.c,SEED_SHOP.r);
+  const cost=SEED_PRICE*SEEDS_PER_BUY, canBuy=P.gold>=cost;
+  const w=44,h=38;
+  ctx.fillStyle=canBuy?'#3fa85c':'#6b7f6f';
+  roundRect(p.x-w/2,p.y-h,w,h,8);ctx.fill();
+  ctx.strokeStyle='#2d5a2d';ctx.lineWidth=2;roundRect(p.x-w/2,p.y-h,w,h,8);ctx.stroke();
+  ctx.font=`24px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('🌱',p.x,p.y-h+15);
+  ctx.font='bold 9px sans-serif';ctx.fillStyle='#fff';ctx.fillText('種子攤',p.x,p.y-h+29);
+  ctx.font='9px sans-serif';ctx.fillStyle=canBuy?'#FFD700':'#eee';
+  ctx.fillText(`${cost}🪙→${SEEDS_PER_BUY}顆`,p.x,p.y-6);
+  if(gdist(P.col,P.row,SEED_SHOP.c,SEED_SHOP.r)<1.15&&canBuy){
+    const prog=P.seedBuyTimer/BUY_TIME;
+    ctx.fillStyle='rgba(255,215,0,0.3)';roundRect(p.x-w/2+3,p.y-11,w-6,4,2);ctx.fill();
+    ctx.fillStyle='#FFD700';roundRect(p.x-w/2+3,p.y-11,(w-6)*prog,4,2);ctx.fill();
+  }
+}
+function drawFWShop(){
+  if(gamePhase<2)return;
+  drawShadow(FW_SHOP.c,FW_SHOP.r,17,5.5);
+  const p=isoPos(FW_SHOP.c,FW_SHOP.r);
+  const maxed=flowerWorkers.length>=MAX_FLOWER_WORKERS, canBuy=!maxed&&P.gold>=FW_COST;
+  const w=44,h=38;
+  ctx.fillStyle=maxed?'#8a8a8a':(canBuy?'#3fa85c':'#6b7f6f');
+  roundRect(p.x-w/2,p.y-h,w,h,8);ctx.fill();
+  ctx.strokeStyle='#2d5a2d';ctx.lineWidth=2;roundRect(p.x-w/2,p.y-h,w,h,8);ctx.stroke();
+  ctx.font=`24px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('👩‍🌾',p.x,p.y-h+15);
+  ctx.font='bold 9px sans-serif';ctx.fillStyle='#fff';ctx.fillText('花農',p.x,p.y-h+29);
+  ctx.font='9px sans-serif';ctx.fillStyle=maxed?'#FFD700':(canBuy?'#FFD700':'#eee');
+  ctx.fillText(maxed?'MAX':`${FW_COST}🪙`,p.x,p.y-6);
+  if(!maxed&&gdist(P.col,P.row,FW_SHOP.c,FW_SHOP.r)<1.15&&canBuy){
+    const prog=P.fwBuyTimer/BUY_TIME;
+    ctx.fillStyle='rgba(255,215,0,0.3)';roundRect(p.x-w/2+3,p.y-11,w-6,4,2);ctx.fill();
+    ctx.fillStyle='#FFD700';roundRect(p.x-w/2+3,p.y-11,(w-6)*prog,4,2);ctx.fill();
+  }
+}
+function drawFlowerStand(){
+  if(gamePhase<3)return;
+  drawShadow(FSTAND.c,FSTAND.r,20,6);
+  const p=isoPos(FSTAND.c,FSTAND.r);
+  if(FSTAND.level===0){
+    const w=50,h=42;
+    ctx.fillStyle='#8a6642';roundRect(p.x-w/2,p.y-h,w,h,8);ctx.fill();
+    ctx.strokeStyle='#5c4020';ctx.lineWidth=2;roundRect(p.x-w/2,p.y-h,w,h,8);ctx.stroke();
+    ctx.font=`22px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('🏗️',p.x,p.y-h+16);
+    ctx.font='9px sans-serif';ctx.fillStyle='#fff';
+    ctx.fillText(FSTAND.building?`興建中 ${FSTAND.buildTimer.toFixed(1)}/2.5s`:`🪵${FSTAND.woodDep}/${FSTAND_BUILD.wood} 🪨${FSTAND.stoneDep}/${FSTAND_BUILD.stone}`,p.x,p.y-h+31);
+    return;
+  }
+  ctx.font=`46px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='alphabetic';ctx.fillText('🏪',p.x,p.y-4);
+  ctx.font='bold 10px sans-serif';ctx.fillStyle='#2d5a2d';ctx.textAlign='center';
+  ctx.shadowColor='#fff';ctx.shadowBlur=3;ctx.fillText(`花攤 (${FSTAND_SELL}🪙/朵)`,p.x,p.y-56);ctx.shadowBlur=0;
+  if(FSTAND.inventory>0){
+    ctx.font='bold 10px sans-serif';ctx.fillStyle='#c0426a';
+    ctx.fillText(`🌸×${FSTAND.inventory}`,p.x,p.y+8);
+  }
+}
+function drawStandCustomers(){
+  for(const c of standCustomers){
+    const p=isoPos(c.col,c.row);
+    ctx.globalAlpha = c.state==='leaving'?0.5:1;
+    ctx.font=`22px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(c.emoji,p.x,p.y-8);
+    if(c.state==='happy'){ ctx.font=`16px ${EMOJI_FONT}`; ctx.fillText('😊',p.x,p.y-24); }
+    ctx.globalAlpha=1;
+  }
+}
+function drawPetShop(ps){
+  drawShadow(ps.c,ps.r,15,5);
+  const p=isoPos(ps.c,ps.r);
+  const canBuy=!ps.owned&&P.gold>=ps.cost;
+  const w=42,h=36;
+  ctx.fillStyle=ps.owned?'#3fa85c':(canBuy?'#3fa85c':'#6b7f6f');
+  roundRect(p.x-w/2,p.y-h,w,h,8);ctx.fill();
+  ctx.strokeStyle='#2d5a2d';ctx.lineWidth=2;roundRect(p.x-w/2,p.y-h,w,h,8);ctx.stroke();
+  ctx.font=`22px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(ps.emoji,p.x,p.y-h+14);
+  ctx.font='bold 8px sans-serif';ctx.fillStyle='#fff';ctx.fillText(ps.name,p.x,p.y-h+26);
+  ctx.font='8px sans-serif';ctx.fillStyle=ps.owned?'#FFD700':'#eee';
+  ctx.fillText(ps.owned?'已擁有':`${ps.cost}🪙`,p.x,p.y-5);
+  if(!ps.owned&&gdist(P.col,P.row,ps.c,ps.r)<1.15&&canBuy){
+    const prog=ps.buyTimer/BUY_TIME;
+    ctx.fillStyle='rgba(255,215,0,0.3)';roundRect(p.x-w/2+3,p.y-9,w-6,4,2);ctx.fill();
+    ctx.fillStyle='#FFD700';roundRect(p.x-w/2+3,p.y-9,(w-6)*prog,4,2);ctx.fill();
+  }
+}
+// local origin = ground contact point; ang=0 points straight down, +ang swings toward +x (forward)
+function drawLimb(x1,y1,ang,len,width,color){
+  const x2=x1+Math.sin(ang)*len, y2=y1+Math.cos(ang)*len;
+  ctx.strokeStyle=color;ctx.lineWidth=width;ctx.lineCap='round';
+  ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+  return {x:x2,y:y2};
+}
+function drawTool(hand,ang,type){
+  if(type!=='tree'&&type!=='rock')return; // bare hands for picking tulips
+  const tx=hand.x+Math.sin(ang)*14, ty=hand.y+Math.cos(ang)*14;
+  ctx.strokeStyle='#8a5a2f';ctx.lineWidth=3.2;ctx.lineCap='round';
+  ctx.beginPath();ctx.moveTo(hand.x,hand.y);ctx.lineTo(tx,ty);ctx.stroke();
+  ctx.save();ctx.translate(tx,ty);ctx.rotate(ang);
+  if(type==='tree'){
+    ctx.fillStyle='#d5dbe2';
+    ctx.beginPath();ctx.moveTo(-2,-8);ctx.lineTo(7,-5);ctx.lineTo(7,5);ctx.lineTo(-2,8);ctx.closePath();ctx.fill();
+    ctx.strokeStyle='#8a919c';ctx.lineWidth=1;ctx.stroke();
+  }else{
+    ctx.strokeStyle='#5b6470';ctx.lineWidth=3.2;ctx.lineCap='round';
+    ctx.beginPath();ctx.moveTo(-8,-4);ctx.lineTo(8,4);ctx.stroke();
+  }
+  ctx.restore();
+}
+// stacks carried-resource icons upward above a point, like a little pile growing on your head
+function drawCarriedItems(cx,cy,items){
+  if(items.length===0)return;
+  const fSize=13, vSp=fSize*0.78, CAP=10;
+  const colGap=items.length===1?0:items.length===2?12:10;
+  const startX=cx-(items.length-1)*colGap/2;
+  ctx.save();ctx.font=`${fSize}px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='middle';
+  items.forEach((col,ci)=>{
+    const colX=startX+ci*colGap, show=Math.min(col.count,CAP);
+    for(let i=0;i<show;i++){
+      const iy=cy-i*vSp, wob=Math.sin(i*1.7+ci*1.2+Date.now()/500)*1.1;
+      ctx.save();ctx.translate(colX+wob,iy);ctx.rotate(Math.sin(i*1.3+ci+Date.now()/600)*0.08);ctx.fillText(col.emoji,0,0);ctx.restore();
+    }
+    if(col.count>CAP){
+      ctx.font='bold 9px sans-serif';ctx.fillStyle=col.color;
+      ctx.shadowColor='#000';ctx.shadowBlur=2;
+      ctx.fillText(`+${col.count-CAP}`,colX,cy-CAP*vSp-6);ctx.shadowBlur=0;
+      ctx.font=`${fSize}px ${EMOJI_FONT}`;
+    }
+  });
+  ctx.restore();
+}
+function drawPlayer(){
+  const p=isoPos(P.col,P.row);
+  const bob=P.moving?Math.sin(P.frame*Math.PI/2)*1.6:0;
+  drawShadow(P.col,P.row,13,4.5);
+
+  const harvesting=!!(P.harvestTarget&&P.harvestTimer>0);
+  const hp=harvesting?clamp(P.harvestTimer/HARVEST_TIME,0,1):0;
+  const swing=harvesting?Math.sin(hp*Math.PI):0; // 0->1->0 once per harvest tick
+  const walk=(P.moving&&!harvesting)?Math.sin(Date.now()/110):0;
+
+  ctx.save();
+  ctx.translate(p.x,p.y+1+bob);
+  if(P.facing<0)ctx.scale(-1,1);
+
+  // legs + boots
+  const legSwing=harvesting?0.1:walk*0.4;
+  const footL=drawLimb(-4,-15,legSwing,13,6,'#3c6ea5');
+  const footR=drawLimb(4,-15,-legSwing,13,6,'#4a7fc2');
+  ctx.fillStyle='#4a3320';
+  ctx.beginPath();ctx.ellipse(footL.x,footL.y+1,4,2.6,0,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.ellipse(footR.x,footR.y+1,4,2.6,0,0,Math.PI*2);ctx.fill();
+
+  // torso (overalls), shaded for a bit of volume
+  ctx.fillStyle='#4a7fc2';roundRect(-10,-32,20,18,7);ctx.fill();
+  ctx.fillStyle='rgba(255,255,255,0.18)';roundRect(-10,-32,7,18,7);ctx.fill();
+  ctx.fillStyle='rgba(0,0,0,0.15)';roundRect(3,-32,7,18,7);ctx.fill();
+  ctx.strokeStyle='#3c6ea5';ctx.lineWidth=1.4;roundRect(-10,-32,20,18,7);ctx.stroke();
+
+  // arms (right arm holds the tool while harvesting)
+  let armL=0.32+walk*0.35, armR=0.32-walk*0.35, toolType=null;
+  if(harvesting){
+    toolType=P.harvestType;
+    if(P.harvestType==='tulip'){ armL=0.35+swing*0.9; armR=0.35+swing*0.9; }
+    else{ const amp=P.harvestType==='rock'?1.5:1.9; armR=-0.6+swing*amp; armL=0.3; }
+  }
+  const handL=drawLimb(-11,-29,armL,15,5.5,'#f2b98a');
+  const handR=drawLimb(11,-29,armR,15,5.5,'#f2b98a');
+  if(toolType)drawTool(handR,armR,toolType);
+
+  // head + face
+  ctx.beginPath();ctx.arc(0,-38,9,0,Math.PI*2);ctx.fillStyle='#f2b98a';ctx.fill();
+  ctx.fillStyle='#3a2a1a';
+  ctx.beginPath();ctx.arc(3,-38,1.1,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(-3,-38,1.1,0,Math.PI*2);ctx.fill();
+
+  // straw hat
+  ctx.fillStyle='#e0a83f';
+  ctx.beginPath();ctx.arc(0,-46,8,Math.PI,0);ctx.fill();
+  ctx.beginPath();ctx.ellipse(0,-45,12,3.6,0,0,Math.PI*2);ctx.fill();
+  ctx.strokeStyle='#c48f2f';ctx.lineWidth=1.2;
+  ctx.beginPath();ctx.ellipse(0,-45,12,3.6,0,0,Math.PI*2);ctx.stroke();
+
+  ctx.restore();
+
+  const carried=[];
+  if(P.wood>0)carried.push({emoji:'🪵',count:P.wood,color:'#CD853F'});
+  if(P.stone>0)carried.push({emoji:'🪨',count:P.stone,color:'#bbb'});
+  if(P.flowers>0)carried.push({emoji:'🌷',count:P.flowers,color:'#FF69B4'});
+  drawCarriedItems(p.x,p.y-58+bob,carried);
+
+  if(harvesting){
+    ctx.beginPath();ctx.strokeStyle='#FFD700';ctx.lineWidth=2.5;
+    ctx.arc(p.x,p.y-20+bob,20,-Math.PI/2,-Math.PI/2+Math.PI*2*hp);ctx.stroke();
+  }
+}
+function drawJoystick(){
+  if(!isMobile)return;
+  ctx.save();ctx.globalAlpha=0.5;
+  ctx.beginPath();ctx.arc(JOY.bx,JOY.by,JOY.r,0,Math.PI*2);ctx.fillStyle='#fff';ctx.fill();
+  ctx.strokeStyle='#2d5a2d';ctx.lineWidth=2;ctx.stroke();
+  ctx.beginPath();ctx.arc(JOY.bx+JOY.kx,JOY.by+JOY.ky,JOY.kr,0,Math.PI*2);
+  ctx.fillStyle='#6fbf4f';ctx.fill();ctx.strokeStyle='#2d5a2d';ctx.lineWidth=2;ctx.stroke();
+  ctx.restore();
+}
+
+function render(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.save();ctx.scale(S,S);
+
+  const bg=ctx.createLinearGradient(0,0,0,VH);
+  bg.addColorStop(0,'#bfe8ff');bg.addColorStop(0.45,'#eaf7e0');bg.addColorStop(1,'#d9f2c4');
+  ctx.fillStyle=bg;ctx.fillRect(0,0,VW,VH);
+
+  for(let r=0;r<WROWS;r++)for(let c=0;c<WCOLS;c++) drawGroundTile(c,r);
+
+  const drawables=[];
+  fenceTiles.forEach(f=>drawables.push({key:f.c+f.r-0.4,draw:()=>drawFencePost(f)}));
+  trees.forEach(t=>drawables.push({key:t.c+t.r,draw:()=>drawTree(t)}));
+  rocks.forEach(rk=>drawables.push({key:rk.c+rk.r,draw:()=>drawRock(rk)}));
+  tulips.forEach(tu=>drawables.push({key:tu.c+tu.r-0.2,draw:()=>drawTulip(tu)}));
+  drawables.push({key:HOUSE_C+HOUSE_R-0.3,draw:drawHouse});
+  SHOPS.forEach(s=>drawables.push({key:s.c+s.r-0.3,draw:()=>drawShopStall(s)}));
+  workers.forEach(w=>drawables.push({key:w.col+w.row,draw:()=>drawWorkerSprite(w)}));
+  if(gamePhase>=2){
+    drawables.push({key:SEED_SHOP.c+SEED_SHOP.r-0.3,draw:drawSeedShop});
+    drawables.push({key:FW_SHOP.c+FW_SHOP.r-0.3,draw:drawFWShop});
+    flowerWorkers.forEach(fw=>drawables.push({key:fw.col+fw.row,draw:()=>drawFlowerWorkerSprite(fw)}));
+  }
+  if(gamePhase>=3){
+    drawables.push({key:FSTAND.c+FSTAND.r-0.3,draw:drawFlowerStand});
+    petShops.forEach(ps=>drawables.push({key:ps.c+ps.r-0.3,draw:()=>drawPetShop(ps)}));
+  }
+  drawables.push({key:P.col+P.row,draw:drawPlayer});
+  drawables.sort((a,b)=>a.key-b.key);
+  drawables.forEach(d=>d.draw());
+  if(gamePhase>=3)drawStandCustomers();
+
+  if(gamePhase<2){
+    const cp=isoPos((FARM_X0+FARM_X1)/2,(FARM_Y0+FARM_Y1)/2);
+    const pulse=0.75+0.25*Math.sin(Date.now()/450);
+    ctx.save();ctx.globalAlpha=pulse;
+    ctx.font=`36px ${EMOJI_FONT}`;ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.shadowColor='rgba(0,0,0,0.4)';ctx.shadowBlur=6;
+    ctx.fillText('🔒',cp.x,cp.y);
+    ctx.restore();
+    const lp=isoPos((FARM_X0+FARM_X1)/2,FARM_Y0-1.6);
+    ctx.font='bold 13px sans-serif';ctx.fillStyle='#3a3a2e';ctx.textAlign='center';
+    ctx.shadowColor='#fff';ctx.shadowBlur=4;
+    ctx.fillText('🔒 升級小屋後開放花園',lp.x,lp.y);
+    ctx.shadowBlur=0;
+  }
+
+  drawParticles();
+  drawJoystick();
+  ctx.restore();
+}
+
+window.addEventListener('resize',resize);
+resize();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
