@@ -1,0 +1,635 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>改錯字打怪大作戰</title>
+<style>
+  * { box-sizing: border-box; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: manipulation; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: linear-gradient(160deg, #fff3d6 0%, #e3f6ff 45%, #ffe1ef 100%);
+    color: #33324a;
+    font-family: -apple-system, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    overflow-x: hidden;
+  }
+  .game-wrap {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    padding: 16px;
+  }
+  h1 { margin: 4px 0; font-size: 1.5rem; color: #ff6b9d; text-shadow: 0 2px 0 #fff; text-align: center; }
+
+  .arena {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    max-width: 560px;
+    background: rgba(255,255,255,.7);
+    border-radius: 20px;
+    padding: 10px 18px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.08);
+    overflow: hidden;
+  }
+  .projectile {
+    position: absolute;
+    top: 46%;
+    font-size: 1.6rem;
+    pointer-events: none;
+    z-index: 8;
+  }
+  @keyframes flyRight {
+    0% { left: 20%; opacity: 0; transform: translateY(-50%) scale(.6) rotate(0deg); }
+    15% { opacity: 1; transform: translateY(-50%) scale(1) rotate(0deg); }
+    100% { left: 76%; opacity: 0; transform: translateY(-50%) scale(1.2) rotate(25deg); }
+  }
+  @keyframes flyLeft {
+    0% { left: 76%; opacity: 0; transform: translateY(-50%) scale(.6) rotate(0deg); }
+    15% { opacity: 1; transform: translateY(-50%) scale(1) rotate(0deg); }
+    100% { left: 20%; opacity: 0; transform: translateY(-50%) scale(1.2) rotate(-25deg); }
+  }
+  .projectile.fly-right { animation: flyRight .35s ease-in forwards; }
+  .projectile.fly-left { animation: flyLeft .35s ease-in forwards; }
+  .fighter { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; width: 100px; }
+  .fighter .emoji { font-size: 2.6rem; transition: transform .15s; }
+  .fighter .emoji.hit { animation: hitShake .35s ease; }
+  @keyframes hitShake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-8px) rotate(-6deg); }
+    75% { transform: translateX(8px) rotate(6deg); }
+  }
+  @keyframes lungeRight {
+    0% { transform: translateX(0) scale(1); }
+    45% { transform: translateX(36px) scale(1.18) rotate(-6deg); }
+    100% { transform: translateX(0) scale(1); }
+  }
+  @keyframes lungeLeft {
+    0% { transform: translateX(0) scale(1); }
+    45% { transform: translateX(-36px) scale(1.18) rotate(6deg); }
+    100% { transform: translateX(0) scale(1); }
+  }
+  .fighter .emoji.lunge-right { animation: lungeRight .5s ease; }
+  .fighter .emoji.lunge-left { animation: lungeLeft .5s ease; }
+  .burst {
+    position: absolute;
+    top: -6px;
+    left: 50%;
+    font-size: 1.6rem;
+    pointer-events: none;
+    animation: popBurst .5s ease-out forwards;
+    z-index: 5;
+  }
+  @keyframes popBurst {
+    0% { transform: translateX(-50%) scale(.3); opacity: 0; }
+    40% { transform: translateX(-50%) scale(1.3); opacity: 1; }
+    100% { transform: translateX(-50%) scale(1.6); opacity: 0; }
+  }
+  .dmgFloat {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    font-weight: 800;
+    font-size: 1.2rem;
+    color: #ff5d5d;
+    text-shadow: 0 0 4px #fff, 0 2px 0 #fff;
+    pointer-events: none;
+    animation: dmgFloatUp .7s ease-out forwards;
+    z-index: 6;
+  }
+  @keyframes dmgFloatUp {
+    0% { transform: translate(-50%, 0); opacity: 1; }
+    100% { transform: translate(-50%, -34px); opacity: 0; }
+  }
+  @keyframes victoryBounce {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-12px); }
+  }
+  @keyframes defeatFall {
+    0% { transform: rotate(0) translateY(0); opacity: 1; }
+    100% { transform: rotate(75deg) translateY(8px); opacity: .35; }
+  }
+  .fighter.winner .emoji { animation: victoryBounce .6s ease infinite; }
+  .fighter.loser .emoji { animation: defeatFall .6s ease forwards; }
+  .fighter.winner, .fighter.loser { z-index: 11; }
+  .hearts { display: flex; gap: 2px; font-size: 1rem; }
+  .hearts span.lost { filter: grayscale(1) opacity(.3); }
+  @keyframes heartPop {
+    0% { transform: scale(1); opacity: 1; }
+    40% { transform: scale(1.5) rotate(-12deg); opacity: .8; }
+    100% { transform: scale(1); opacity: .3; filter: grayscale(1); }
+  }
+  .hearts span.losing { animation: heartPop .45s ease; }
+  .vs { font-size: 1.1rem; font-weight: 800; color: #a78bfa; }
+  .progress { opacity: .65; font-size: .85rem; }
+
+  .sentence-card {
+    background: #fff8ea;
+    border: 4px solid #ffd166;
+    border-radius: 20px;
+    padding: 22px 18px;
+    box-shadow: 0 8px 24px rgba(80,50,140,.15);
+    font-size: clamp(1.3rem, 5.5vw, 2rem);
+    line-height: 2;
+    text-align: center;
+    max-width: 680px;
+    width: 100%;
+  }
+  .char { display: inline-block; cursor: pointer; padding: 2px 1px; border-radius: 6px; }
+  .char.punct { cursor: default; }
+  .char.flash-wrong { animation: shakeRed .4s ease; }
+  @keyframes shakeRed {
+    0%, 100% { transform: translateX(0); background: transparent; }
+    25% { transform: translateX(-5px); background: #ffb3b3; }
+    75% { transform: translateX(5px); background: #ffb3b3; }
+  }
+  .char.tried-wrong { opacity: .35; text-decoration: line-through; cursor: not-allowed; }
+  .char.fixed {
+    display: inline-block;
+    color: #2e9e3f;
+    font-weight: 800;
+    font-size: 1.4em;
+    background: #d7f7df;
+    box-shadow: 0 0 0 3px #6bd67a;
+    border-radius: 6px;
+    animation: fixedPop .4s ease;
+  }
+  @keyframes fixedPop {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.5); }
+    100% { transform: scale(1); }
+  }
+
+  .instruction { opacity: .7; font-size: .95rem; text-align: center; max-width: 480px; min-height: 1.2em; }
+  .feedback { font-size: 1.05rem; font-weight: 800; min-height: 1.4em; text-align: center; }
+  .feedback.good { color: #2e9e3f; }
+  .feedback.bad { color: #ff5d5d; }
+
+  button {
+    background: #4fc3f7;
+    color: #fff;
+    border: none;
+    border-radius: 999px;
+    padding: 10px 22px;
+    font-size: 1rem;
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: 0 3px 0 rgba(0,0,0,.15);
+  }
+  button:active { transform: translateY(2px); box-shadow: 0 1px 0 rgba(0,0,0,.15); }
+  #restartBtn { background: #ff9f43; }
+
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(51,50,74,.75);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 12px;
+    text-align: center;
+    color: #fff;
+    z-index: 10;
+  }
+  .modal-overlay.show { display: flex; }
+  .overlay-card {
+    background: #fff8ea;
+    color: #33324a;
+    padding: 28px 36px;
+    border-radius: 20px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.3);
+    max-width: 90vw;
+  }
+  .overlay-card h2 { color: #ff6b9d; margin-top: 0; }
+  .overlay-card .emoji-big { font-size: 3.2rem; margin: 6px 0; }
+  .pick-label { font-weight: 700; opacity: .7; margin: 10px 0 2px; }
+  .grade-picker { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  .grade-g2 { background: #4fc3f7; }
+  .grade-g4 { background: #a78bfa; }
+  .home-link {
+    position: fixed;
+    top: 10px;
+    left: 10px;
+    z-index: 20;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: rgba(255,255,255,.85);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.3rem;
+    text-decoration: none;
+    box-shadow: 0 3px 8px rgba(0,0,0,.15);
+  }
+  .home-link:active { transform: scale(.92); }
+  @media (max-width: 480px) {
+    .fighter { width: 78px; }
+    .fighter .emoji { font-size: 2.1rem; }
+    .hearts { font-size: .85rem; }
+  }
+</style>
+</head>
+<body>
+  <a href="../../index.html" target="_top" class="home-link" aria-label="返回主選單" title="返回主選單">🏠</a>
+  <div class="game-wrap">
+    <h1>⚔️ 改錯字打怪大作戰</h1>
+
+    <div class="arena" id="arena">
+      <div class="fighter" id="playerFighter">
+        <div class="emoji" id="playerEmoji">🧙</div>
+        <div class="hearts" id="playerHearts"></div>
+      </div>
+      <div class="vs">VS</div>
+      <div class="fighter" id="monsterFighter">
+        <div class="emoji" id="monsterEmoji">👹</div>
+        <div class="hearts" id="monsterHearts"></div>
+      </div>
+    </div>
+
+    <div class="progress" id="progressEl">第 1 / 5 題</div>
+
+    <div class="sentence-card" id="sentenceEl"></div>
+
+    <div class="instruction" id="instructionEl">找出句子裡寫錯的字，點下去攻擊怪獸！每題只能點一次，點準了才打得到～</div>
+    <div class="feedback" id="feedbackEl"></div>
+
+    <button id="restartBtn" type="button">🔁 重新選題</button>
+  </div>
+
+  <div id="startOverlay" class="modal-overlay show">
+    <div class="overlay-card">
+      <h2>怪獸出現了！⚔️</h2>
+      <div class="emoji-big" id="startMonsterPreview">👹</div>
+      <p>找到錯字就能攻擊怪獸，找錯了會被反擊喔！</p>
+      <p class="pick-label">選擇題庫</p>
+      <div class="grade-picker">
+        <button class="gradeBtn grade-g2" data-grade="g2" type="button">二上期中 ▶</button>
+        <button class="gradeBtn grade-g4" data-grade="g4" type="button">四上期中 ▶</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="resultOverlay" class="modal-overlay">
+    <div class="overlay-card">
+      <h2 id="resultTitle">勝利！</h2>
+      <div class="emoji-big" id="resultEmoji">🎉</div>
+      <button id="resultRestartBtn" type="button">再戰一場 ▶</button>
+    </div>
+  </div>
+
+<script>
+const QUESTION_BANKS = {
+g2: [
+  {s:"我們是哖紀相同的好朋友。", w:"哖", c:"年"},
+  {s:"我稀望可以快快長高。", w:"稀", c:"希"},
+  {s:"表演即將開始，請大家趕快座下。", w:"座", c:"坐"},
+  {s:"我好喜歡我的新課苯。", w:"苯", c:"本"},
+  {s:"他把書放在自己的味子上。", w:"味", c:"位"},
+  {s:"他每天努立的練習，希望能加入游泳校隊。", w:"立", c:"力"},
+  {s:"他早上睡過頭，所已上學遲到了。", w:"已", c:"以"},
+  {s:"姥師請大家排好隊伍。", w:"姥", c:"老"},
+  {s:"線在你想要做什麼呢？", w:"線", c:"現"},
+  {s:"運動完畢後，除了要適量補充水分，孩要多休息。", w:"孩", c:"還"},
+  {s:"止要肯付出，就一定會有收穫。", w:"止", c:"只"},
+  {s:"我們去醫院探忘生病的奶奶。", w:"忘", c:"望"},
+  {s:"學校附近新開了一家樞局。", w:"樞", c:"書"},
+  {s:"這座小鎮是他的固鄉。", w:"固", c:"故"},
+  {s:"麻煩你們將打掃佣具收進儲藏室。", w:"佣", c:"用"},
+  {s:"她的談土高雅，待人很有禮貌。", w:"土", c:"吐"},
+  {s:"我把吐思塗上果醬。", w:"思", c:"司"},
+  {s:"國王和王后住在城保裡。", w:"保", c:"堡"},
+  {s:"你有沒有什麼好坊法呢？", w:"坊", c:"方"},
+  {s:"小妹妹用沙子堆成堡。", w:"成", c:"城"},
+  {s:"那輛汽車有一個倫子爆胎了。", w:"倫", c:"輪"},
+  {s:"我們圍著園桌吃年夜飯。", w:"園", c:"圓"},
+  {s:"我最喜歡爸爸煮的但花湯。", w:"但", c:"蛋"},
+  {s:"他在紙上化了好多圖案。", w:"化", c:"畫"},
+  {s:"我們在盪秋千時，千萬要注意安銓。", w:"銓", c:"全"},
+  {s:"媽媽把冰箱裡剩下的食材做成蔬菜堅餅。", w:"堅", c:"煎"},
+  {s:"我把楊桃沏成許多小星星。", w:"沏", c:"切"},
+  {s:"妹妹的髮筴上有一個可愛的草莓裝飾。", w:"筴", c:"夾"},
+  {s:"越皆近鋼琴比賽的那一天，我的心情就越緊張。", w:"皆", c:"接"},
+  {s:"由於颱風來襲，山區交通便終斷了。", w:"終", c:"中"},
+  {s:"弟弟打伴成超人的樣子。", w:"伴", c:"扮"},
+  {s:"胡蝶在花叢間上上下下的飛著。", w:"胡", c:"蝴"},
+  {s:"我們今天去參觀蝴碟館。", w:"碟", c:"蝶"},
+  {s:"這位歌手的外形十分亮莉，一出道就受到注目。", w:"莉", c:"麗"},
+  {s:"迎取的隊伍熱熱鬧鬧的經過這條小巷。", w:"取", c:"娶"},
+  {s:"桌上的紅比是誰的呢？", w:"比", c:"筆"},
+  {s:"我最喜歡的顏色是簧色。", w:"簧", c:"黃"},
+  {s:"哥哥打鼓的漾子看起來好神氣。", w:"漾", c:"樣"},
+  {s:"這條小向的牆上彩繪了可愛的卡通圖案。", w:"向", c:"巷"},
+  {s:"他正在廚房裡茫著炒菜。", w:"茫", c:"忙"},
+  {s:"這間小木烏裡堆放了許多雜物。", w:"烏", c:"屋"},
+  {s:"弟弟小心的奉著碗走到餐桌前。", w:"奉", c:"捧"},
+  {s:"房間裡坐著一位美麗的新孃。", w:"孃", c:"娘"},
+  {s:"大野狼跨躍欄杆，闖進農場裡。", w:"躍", c:"越"},
+  {s:"他擁有一個幸福鎂滿的家庭。", w:"鎂", c:"美"},
+  {s:"今年校慶的韻動會真熱鬧。", w:"韻", c:"運"},
+  {s:"姐姐的秀髮隨風漂揚。", w:"漂", c:"飄"},
+  {s:"雨滴在池塘中跳武。", w:"武", c:"舞"},
+  {s:"好娃！我的橡皮擦可以借你。", w:"娃", c:"哇"},
+  {s:"志工媽媽帶著笑蓉說故事。", w:"蓉", c:"容"},
+  {s:"上課要專心，請大家枉黑板這邊看。", w:"枉", c:"往"},
+  {s:"下課時，操場充滿了同學的歡笑笙。", w:"笙", c:"聲"},
+  {s:"我們站在大太陽下，熱得和水直流。", w:"和", c:"汗"},
+  {s:"拔河比賽罪能展現團隊精神。", w:"罪", c:"最"},
+  {s:"這個週末我們要去洞物園。", w:"洞", c:"動"},
+  {s:"今天的天氣非常爇。", w:"爇", c:"熱"},
+  {s:"你昨天晚上睡覺前，有設定淖鐘嗎？", w:"淖", c:"鬧"},
+  {s:"爸爸每天都騎角踏車上下班。", w:"角", c:"腳"},
+  {s:"我們同心偕力打掃教室。", w:"偕", c:"協"},
+  {s:"工廠排放的廢水會汙染何川。", w:"何", c:"河"},
+  {s:"我今天早上吃了一份蛋屏，喝了一杯牛奶。", w:"屏", c:"餅"},
+  {s:"他為了準備搬家，因佌最近非常忙碌。", w:"佌", c:"此"},
+  {s:"很多遊客來到新埔小陣旅遊。", w:"陣", c:"鎮"},
+  {s:"洗完手後，記得用毛巾把手擦甘，才不會弄溼地板。", w:"甘", c:"乾"},
+  {s:"出國旅遊時，一定要注億自身的安全，並保管好隨身財物。", w:"億", c:"意"},
+  {s:"突然下起大雨，茵此原定的戶外野餐活動只好取消。", w:"茵", c:"因"},
+  {s:"園遊會上，同學們都戴上可嬡的動物頭飾，看起來真有趣。", w:"嬡", c:"愛"},
+  {s:"為了慶祝搬新家，爸爸媽媽特別舉辦了一場派對，邀請瀙朋好友來作客。", w:"瀙", c:"親"},
+  {s:"爺爺到市場買了一藍蘋果。", w:"藍", c:"籃"},
+  {s:"你在署假時安排了什麼活動呢？", w:"署", c:"暑"},
+  {s:"數數看，路編停了幾輛車？", w:"編", c:"邊"},
+  {s:"我家就在學校附進。", w:"進", c:"近"},
+  {s:"那位街頭藝人熟練的炊奏著口琴，輕快的旋律讓人忍不住跟著一起打拍子。", w:"炊", c:"吹"},
+],
+g4: [
+  {s:"彈塗魚除了游泳，還擅長爬行與跳曜。", w:"曜", c:"躍"},
+  {s:"打掃過後，教室的地板看起來光猾明亮。", w:"猾", c:"滑"},
+  {s:"你們看，池塘裡有好多小田羅！", w:"羅", c:"螺"},
+  {s:"爺爺年紀大，所以行動比較暖慢。", w:"暖", c:"緩"},
+  {s:"你知道老鶯能飛多高嗎？", w:"鶯", c:"鷹"},
+  {s:"清晨，幾顆露珠從葉脈緩緩的猾落。", w:"猾", c:"滑"},
+  {s:"爸爸告訴我桌上的那中香蕉還沒熟透。", w:"中", c:"串"},
+  {s:"寫字時應該保持端正的資勢，才不容易有近視的問題。", w:"資", c:"姿"},
+  {s:"頒獎典禮的後臺一搬觀眾是禁止進入的。", w:"搬", c:"般"},
+  {s:"這個暑假我學會了怎麼打駝螺，真是有成就感！", w:"駝", c:"陀"},
+  {s:"這碗蘑菇濃揚真是美味。", w:"揚", c:"湯"},
+  {s:"桌上那一東花讓客廳充滿生氣。", w:"東", c:"束"},
+  {s:"弟弟慚停玩玩具，開始寫作業。", w:"慚", c:"暫"},
+  {s:"弟弟拾棄點心時間，就為了完成拼圖。", w:"拾", c:"捨"},
+  {s:"妹妹用紅蠅在髮梢上打了一個蝴蝶結。", w:"蠅", c:"繩"},
+  {s:"他的統一發票中獎了，真辛運。", w:"辛", c:"幸"},
+  {s:"街角的餐廳正在昭聘新廚師。", w:"昭", c:"招"},
+  {s:"家裡儲備的量食很充足，即使颱風來臨也不用擔心。", w:"量", c:"糧"},
+  {s:"這把椅子剛刷完油漆，斬時不能使用。", w:"斬", c:"暫"},
+  {s:"我們揄空到公園野餐，享受開心的午後時光。", w:"揄", c:"偷"},
+  {s:"大家互相衣靠，度過艱苦的時刻。", w:"衣", c:"依"},
+  {s:"商場裡，有一位婦人對哭鬧的孩子東手無策。", w:"東", c:"束"},
+  {s:"這家麵店的詔牌非常醒目，遠遠的就能看見。", w:"詔", c:"招"},
+  {s:"媽媽盛了一碗熱燙給我，希望能趕走冬天的寒意。", w:"燙", c:"湯"},
+  {s:"比賽最後一杪，他用力將球拋出，沒想到竟奇蹟般進籃得分，逆轉了這場賽事。", w:"杪", c:"秒"},
+  {s:"新杜區除了有嚴密的保全系統，還有完善的公共設施。", w:"杜", c:"社"},
+  {s:"阿姨想要激請親朋好友參加她的婚禮，一起分享喜悅。", w:"激", c:"邀"},
+  {s:"車窗外映入眼簾的景色，讓大家產生似層相識的感覺。", w:"層", c:"曾"},
+  {s:"我們以民主的方式，坄票選出下一任的班長。", w:"坄", c:"投"},
+  {s:"便捷的交通運輸工具，讓往返臺北與高雄「一日生活圈」的夢想不再搖不可及。", w:"搖", c:"遙"},
+  {s:"哥哥不但擅長禪奏鋼琴，小提琴也拉得很好。", w:"禪", c:"彈"},
+  {s:"弟弟在街上遇到同學，便興奮的輝手打招呼。", w:"輝", c:"揮"},
+  {s:"大家應不分披此，共同為維護社區環境盡一分心力。", w:"披", c:"彼"},
+  {s:"李老師對於繪畫教學不遺餘力，奉現了畢生的心力。", w:"現", c:"獻"},
+  {s:"生病了一定要找醫師治潦，不要隨便相信偏方。", w:"潦", c:"療"},
+  {s:"為了讓老年人有安享晚年的地方，他決定損出空地來興建安養院。", w:"損", c:"捐"},
+  {s:"無論颳風或下雨，陳醫師都會準時到偏鄉為居民冶病。", w:"冶", c:"治"},
+  {s:"服用樂品之前，一定要先請教醫師，以免發生危險。", w:"樂", c:"藥"},
+  {s:"我們要注意飲食的為生，才不會讓疾病上身。", w:"為", c:"衛"},
+  {s:"姐姐要到美國留學，食蓿會由學校代為安排。", w:"蓿", c:"宿"},
+  {s:"馬偕成立了女學棠，讓女子也有受教育的機會。", w:"棠", c:"堂"},
+  {s:"馬偕博士對臺灣有著農厚的情感，他的愛心永遠留在人們的心中。", w:"農", c:"濃"},
+  {s:"警方目前正全力調查這起綁架肋索案件。", w:"肋", c:"勒"},
+  {s:"參觀博物館時，可提前預約專頁導覽員為遊客解說。", w:"頁", c:"業"},
+  {s:"這本小說厲志又感人，值得大家一讀。", w:"厲", c:"勵"},
+  {s:"士兵們檸死不屈，為國家奮戰到最後一刻。", w:"檸", c:"寧"},
+  {s:"最近氣候多變化，大家都要關住自己的身體狀況，避免感冒。", w:"住", c:"注"},
+  {s:"遇到任河困難，我們都要勇於面對，尋求解決之道。", w:"河", c:"何"},
+  {s:"來到山頂遠望，視野十分寬闊，美景進收眼底。", w:"進", c:"盡"},
+  {s:"這條平緩的燈山步道，適合一般民眾健行。", w:"燈", c:"登"},
+  {s:"高山上養氣稀薄，登山前要事先做好萬全準備。", w:"養", c:"氧"},
+  {s:"今天的天氣很晴郎，適合郊遊踏青。", w:"郎", c:"朗"},
+  {s:"升旗典禮時要保持肅墓，不能開玩笑。", w:"墓", c:"穆"},
+  {s:"他皓愛游泳，一年四季幾乎都會到泳池報到。", w:"皓", c:"酷"},
+  {s:"經過父親的開導，他終於豁然開郎，不再沮喪。", w:"郎", c:"朗"},
+]
+};
+
+const MONSTERS = ["👹","👺","🐉","👻","🧌","🦖","🐲","💀"];
+const CJK = /[一-鿿]/;
+const ROUNDS = 5;
+const START_HP = 5;
+
+const sentenceEl = document.getElementById("sentenceEl");
+const instructionEl = document.getElementById("instructionEl");
+const feedbackEl = document.getElementById("feedbackEl");
+const progressEl = document.getElementById("progressEl");
+const playerHeartsEl = document.getElementById("playerHearts");
+const monsterHeartsEl = document.getElementById("monsterHearts");
+const playerEmojiEl = document.getElementById("playerEmoji");
+const monsterEmojiEl = document.getElementById("monsterEmoji");
+const playerFighterEl = document.getElementById("playerFighter");
+const monsterFighterEl = document.getElementById("monsterFighter");
+const arenaEl = document.getElementById("arena");
+const startOverlay = document.getElementById("startOverlay");
+const startMonsterPreview = document.getElementById("startMonsterPreview");
+const resultOverlay = document.getElementById("resultOverlay");
+const resultTitle = document.getElementById("resultTitle");
+const resultEmoji = document.getElementById("resultEmoji");
+
+let pool = [];
+let qIndex = 0;
+let playerHP = START_HP;
+let monsterHP = START_HP;
+let locked = false;
+let battleEnded = false;
+let currentMonster = MONSTERS[0];
+let prevPlayerHP = START_HP;
+let prevMonsterHP = START_HP;
+
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function renderHearts(el, hp, prevHp) {
+  el.innerHTML = "";
+  for (let i = 0; i < START_HP; i++) {
+    const span = document.createElement("span");
+    span.textContent = "❤️";
+    if (i >= hp) span.classList.add("lost");
+    if (i === hp && hp < prevHp) span.classList.add("losing");
+    el.appendChild(span);
+  }
+}
+
+function renderHP() {
+  renderHearts(playerHeartsEl, playerHP, prevPlayerHP);
+  renderHearts(monsterHeartsEl, monsterHP, prevMonsterHP);
+  prevPlayerHP = playerHP;
+  prevMonsterHP = monsterHP;
+}
+
+function spawnEffect(fighterEl, className, content) {
+  const el = document.createElement("div");
+  el.className = className;
+  el.textContent = content;
+  fighterEl.appendChild(el);
+  el.addEventListener("animationend", () => el.remove());
+}
+
+function spawnBreath(flyClass, emoji) {
+  for (let i = 0; i < 3; i++) {
+    const p = document.createElement("div");
+    p.className = `projectile ${flyClass}`;
+    p.textContent = emoji;
+    p.style.top = (40 + i * 7) + "%";
+    p.style.animationDelay = (i * 55) + "ms";
+    arenaEl.appendChild(p);
+    p.addEventListener("animationend", () => p.remove());
+  }
+}
+
+function attack(attackerEl, lungeClass, flyClass, breathEmoji, burstEmoji, defenderEl, defenderFighterEl, onImpact) {
+  attackerEl.classList.remove("lunge-left", "lunge-right");
+  void attackerEl.offsetWidth;
+  attackerEl.classList.add(lungeClass);
+  spawnBreath(flyClass, breathEmoji);
+  setTimeout(() => {
+    defenderEl.classList.remove("hit");
+    void defenderEl.offsetWidth;
+    defenderEl.classList.add("hit");
+    spawnEffect(defenderFighterEl, "burst", burstEmoji);
+    spawnEffect(defenderFighterEl, "dmgFloat", "-1");
+    onImpact();
+  }, 180);
+  setTimeout(() => attackerEl.classList.remove(lungeClass), 500);
+  setTimeout(() => defenderEl.classList.remove("hit"), 560);
+}
+
+function renderSentence(q) {
+  sentenceEl.innerHTML = "";
+  const chars = Array.from(q.s);
+  const wrongIndex = chars.findIndex(ch => ch === q.w);
+  chars.forEach((ch, i) => {
+    const span = document.createElement("span");
+    const clickable = CJK.test(ch);
+    span.className = "char" + (clickable ? "" : " punct");
+    span.textContent = ch;
+    if (clickable) span.addEventListener("click", () => onCharClick(i, wrongIndex, span, q));
+    sentenceEl.appendChild(span);
+  });
+}
+
+function loadQuestion() {
+  locked = false;
+  feedbackEl.textContent = "";
+  feedbackEl.className = "feedback";
+  progressEl.textContent = `第 ${qIndex + 1} / ${ROUNDS} 題`;
+  instructionEl.textContent = "找出句子裡寫錯的字，點下去攻擊怪獸！點錯會被反擊扣血，但可以繼續找～";
+  renderSentence(pool[qIndex]);
+}
+
+function onCharClick(i, wrongIndex, span, q) {
+  if (locked || battleEnded) return;
+  if (span.classList.contains("tried-wrong")) return;
+  if (i === wrongIndex) {
+    locked = true;
+    span.textContent = q.c;
+    span.classList.add("fixed");
+    feedbackEl.className = "feedback good";
+    feedbackEl.textContent = `攻擊成功！正確的字是「${q.c}」`;
+    attack(playerEmojiEl, "lunge-right", "fly-right", "🔥", "🔥", monsterEmojiEl, monsterFighterEl, () => {
+      monsterHP--;
+      renderHP();
+    });
+    setTimeout(nextQuestion, 3400);
+  } else {
+    span.classList.add("flash-wrong", "tried-wrong");
+    feedbackEl.className = "feedback bad";
+    feedbackEl.textContent = "這個字是對的，再找找看！（扣了 1 滴血）";
+    setTimeout(() => span.classList.remove("flash-wrong"), 400);
+    attack(monsterEmojiEl, "lunge-left", "fly-left", "💧", "💦", playerEmojiEl, playerFighterEl, () => {
+      playerHP--;
+      renderHP();
+      if (playerHP <= 0) {
+        battleEnded = true;
+        revealAnswer(wrongIndex, q);
+        setTimeout(finishBattle, 1800);
+      }
+    });
+  }
+}
+
+function revealAnswer(wrongIndex, q) {
+  const span = sentenceEl.children[wrongIndex];
+  span.textContent = q.c;
+  span.classList.add("fixed");
+  feedbackEl.className = "feedback bad";
+  feedbackEl.textContent = `血量用完了，正確的字是「${q.c}」`;
+}
+
+function nextQuestion() {
+  qIndex++;
+  if (qIndex >= ROUNDS || playerHP <= 0 || monsterHP <= 0) {
+    finishBattle();
+  } else {
+    loadQuestion();
+  }
+}
+
+function finishBattle() {
+  const win = playerHP > monsterHP;
+  resultTitle.textContent = win ? "勝利！" : "怪獸贏了…";
+  resultEmoji.textContent = win ? "🎉" : "😵";
+  playerFighterEl.classList.toggle("winner", win);
+  playerFighterEl.classList.toggle("loser", !win);
+  monsterFighterEl.classList.toggle("winner", !win);
+  monsterFighterEl.classList.toggle("loser", win);
+  resultOverlay.classList.add("show");
+}
+
+let currentGrade = "g2";
+
+function startBattle(gradeKey) {
+  if (gradeKey) currentGrade = gradeKey;
+  pool = shuffle(QUESTION_BANKS[currentGrade]).slice(0, ROUNDS);
+  qIndex = 0;
+  playerHP = START_HP;
+  monsterHP = START_HP;
+  prevPlayerHP = START_HP;
+  prevMonsterHP = START_HP;
+  battleEnded = false;
+  playerFighterEl.classList.remove("winner", "loser");
+  monsterFighterEl.classList.remove("winner", "loser");
+  currentMonster = MONSTERS[Math.floor(Math.random() * MONSTERS.length)];
+  monsterEmojiEl.textContent = currentMonster;
+  renderHP();
+  startOverlay.classList.remove("show");
+  resultOverlay.classList.remove("show");
+  loadQuestion();
+}
+
+document.querySelectorAll(".gradeBtn").forEach(btn => {
+  btn.onclick = () => startBattle(btn.dataset.grade);
+});
+document.getElementById("resultRestartBtn").onclick = () => startBattle();
+document.getElementById("restartBtn").onclick = () => {
+  resultOverlay.classList.remove("show");
+  startOverlay.classList.add("show");
+};
+
+startMonsterPreview.textContent = MONSTERS[Math.floor(Math.random() * MONSTERS.length)];
+renderHP();
+</script>
+</body>
+</html>
