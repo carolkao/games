@@ -8,7 +8,7 @@
 - [`games/multiplication-find/`](games/multiplication-find/) — 九九乘法找找看
 - [`games/multiplication-defense/`](games/multiplication-defense/) — 九九乘法保衛戰
 - [`games/forest-cabin/`](games/forest-cabin/) — 森林小屋
-- [`games/isometric-town/`](games/isometric-town/) — 立體小鎮（實驗性的立體畫面版本，玩法類似森林小屋，目前隱藏於選單）
+- [`games/isometric-town/`](games/isometric-town/) — 立體小鎮（立體畫面版本，玩法類似森林小屋）
 
 ## 新增一個遊戲
 

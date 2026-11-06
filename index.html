@@ -107,21 +107,17 @@
       title: "森林小屋",
       description: "採集資源、經營小屋",
       path: "games/forest-cabin/",
-      hidden: true,
     },
     {
       icon: "🏘️",
       title: "立體小鎮",
-      description: "立體農場・採集經營（實驗中）",
+      description: "立體農場・採集經營",
       path: "games/isometric-town/",
-      hidden: true,
     },
   ];
 
   const grid = document.getElementById("grid");
-  const params = new URLSearchParams(location.search);
-  const showHiddenGames = params.has("forest-cabin") || params.has("isometric-town");
-  GAMES.filter(game => !game.hidden || showHiddenGames).forEach(game => {
+  GAMES.forEach(game => {
     const a = document.createElement("a");
     a.className = "card";
     a.href = game.path;
