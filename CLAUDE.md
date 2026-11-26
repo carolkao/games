@@ -15,7 +15,7 @@
 - gh token 放在使用者本機的 `~/.zsh/shared_env.zsh`（不在 repo 裡，也不要寫進 repo）。
 - 要 push 時，`source` 和 `git push` 必須在**同一個 Bash 指令**：`source ~/.zsh/shared_env.zsh && git push`。`gh auth setup-git` 已經跑過。不要去探測憑證，也不要用 `git -c credential.helper=...`。
 - 2026-11-26 實測：`shared_env.zsh` 設進環境的 `GH_TOKEN` 已失效（`gh auth status` 說 invalid，`git push --dry-run` 回 `Authentication failed`，`gh pr list` 回 401）。`shared_env.zsh` 最後修改時間是 2026-11-10，晚於最後一次成功 push（約 11-07），無法確定是舊 token 到期還是之後換成了無效的新值。
-- `gh auth status` 同時顯示 keyring 裡有 `carolkao` 的有效登入（scopes：repo、workflow…），只是被環境變數 `GH_TOKEN` 蓋掉。可能的解法是 push 時 `env -u GH_TOKEN -u GITHUB_TOKEN git push`，**尚未實測**，改用前先問使用者；否則請使用者更新 `shared_env.zsh` 裡的 key。
+- `gh auth status` 同時顯示 keyring 裡有 `carolkao` 的有效登入（scopes：repo、workflow…），只是被環境變數 `GH_TOKEN` 蓋掉。解法：push 時用 `env -u GH_TOKEN -u GITHUB_TOKEN git push`（2026-11-26 使用者實測成功，fetch 也可用同樣寫法）。這是 keyring 憑證、不是 `shared_env.zsh` 那把，所以由使用者自己 push，或先問過再用；之後使用者更新 `shared_env.zsh` 的 key 就能回到原本的寫法。
 
 ## 慣例
 - `games/forest-cabin/` 是立體小鎮的玩法參考原版，使用者要求**不要改動**；立體版是獨立的 `games/isometric-town/`。
